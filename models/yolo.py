@@ -12,6 +12,8 @@ if str(ROOT) not in sys.path:
 if platform.system() != 'Windows':
     ROOT = Path(os.path.relpath(ROOT, Path.cwd()))  # relative
 
+from utils.model_utils import *
+from utils.transformer import *
 from models.common import *
 from models.experimental import *
 from utils.general import LOGGER, check_version, check_yaml, make_divisible, print_args
@@ -73,7 +75,9 @@ class Detect(nn.Module):
         for a, b, s in zip(m.cv2, m.cv3, m.stride):  # from
             a[-1].bias.data[:] = 1.0  # box
             b[-1].bias.data[:m.nc] = math.log(5 / m.nc / (640 / s) ** 2)  # cls (5 objects and 80 classes per 640 image)
-
+    def decode_bboxes(self, bboxes):
+        """Decode bounding boxes."""
+        return dist2bbox(self.dfl(bboxes), self.anchors.unsqueeze(0), xywh=True, dim=1) * self.strides
 
 class DDetect(nn.Module):
     # YOLO Detect head for detection models
@@ -520,12 +524,13 @@ class Panoptic(Detect):
 
 class BaseModel(nn.Module):
     # YOLO base model
-    def forward(self, x, profile=False, visualize=False):
-        return self._forward_once(x, profile, visualize)  # single-scale inference, train
+    def forward(self, x, profile=False, visualize=False, detr=False):
+        return self._forward_once(x, profile, visualize, detr)  # single-scale inference, train
 
-    def _forward_once(self, x, profile=False, visualize=False):
+    def _forward_once(self, x, batch=None, profile=False, visualize=False, detr=False):            
         y, dt = [], []  # outputs
-        for m in self.model:
+        imgz = x.shape[2:]
+        for m in self.model[:-1]:
             if m.f != -1:  # if not from previous layer
                 x = y[m.f] if isinstance(m.f, int) else [x if j == -1 else y[j] for j in m.f]  # from earlier layers
             if profile:
@@ -534,7 +539,12 @@ class BaseModel(nn.Module):
             y.append(x if m.i in self.save else None)  # save output
             if visualize:
                 feature_visualization(x, m.type, m.i, save_dir=visualize)
-        return x
+        
+        head = self.model[-1]
+        if detr:
+            return head([y[j] for j in head.f], batch=batch, imgsz=imgz)
+            
+        return head([y[j] for j in head.f])
 
     def _profile_one_layer(self, m, x, dt):
         c = m == self.model[-1]  # is final layer, copy input as inplace fix
@@ -603,7 +613,7 @@ class DetectionModel(BaseModel):
 
         # Build strides, anchors
         m = self.model[-1]  # Detect()
-        if isinstance(m, (Detect, DDetect, Segment, DSegment, Panoptic)):
+        if isinstance(m, (Detect, DDetect, Segment, DSegment, Panoptic)) and not isinstance(m, RTDETRSegment):
             s = 256  # 2x min stride
             m.inplace = self.inplace
             forward = lambda x: self.forward(x)[0] if isinstance(m, (Segment, DSegment, Panoptic)) else self.forward(x)
@@ -621,16 +631,20 @@ class DetectionModel(BaseModel):
             # m.anchors /= m.stride.view(-1, 1, 1)
             self.stride = m.stride
             m.bias_init()  # only run once
+        else:
+            m.stride = torch.tensor([8, 16, 32])
+            self.stride = m.stride
+            m.bias_init()
 
         # Init weights, biases
         initialize_weights(self)
         self.info()
         LOGGER.info('')
 
-    def forward(self, x, augment=False, profile=False, visualize=False):
+    def forward(self, x, batch=None, augment=False, profile=False, visualize=False, detr=False):
         if augment:
             return self._forward_augment(x)  # augmented inference, None
-        return self._forward_once(x, profile, visualize)  # single-scale inference, train
+        return self._forward_once(x, batch, profile, visualize, detr)  # single-scale inference, train
 
     def _forward_augment(self, x):
         img_size = x.shape[-2:]  # height, width
@@ -709,6 +723,260 @@ class ClassificationModel(BaseModel):
         # Create a YOLO classification model from a *.yaml file
         self.model = None
 
+class RTDETRSegment(Detect):
+    """
+    Real-Time Deformable Transformer Decoder (RTDETRDecoder) module for object detection.
+
+    This decoder module utilizes Transformer architecture along with deformable convolutions to predict bounding boxes
+    and class labels for objects in an image. It integrates features from multiple layers and runs through a series of
+    Transformer decoder layers to output the final predictions.
+    """
+
+    export = False  # export mode
+
+    def __init__(
+        self,
+        nc=80,
+        ch=(512, 1024, 2048),
+        hd=64,  # hidden dim
+        nq=100,  # num queries
+        ndp=4,  # num decoder points
+        nh=8,  # num head
+        ndl=6,  # num decoder layers
+        d_ffn=1024,  # dim of feedforward
+        dropout=0.0,
+        act=nn.ReLU(),
+        eval_idx=-1,
+        # Training args
+        nd=100,  # num denoising
+        label_noise_ratio=0.5,
+        box_noise_scale=1.0,
+        learnt_init_query=False,
+
+        nm=32,  # number of masks
+        npr=256, # number of protos
+    ):
+        """
+        Initializes the RTDETRDecoder module with the given parameters.
+
+        Args:
+            nc (int): Number of classes. Default is 80.
+            ch (tuple): Channels in the backbone feature maps. Default is (512, 1024, 2048).
+            hd (int): Dimension of hidden layers. Default is 256.
+            nq (int): Number of query points. Default is 300.
+            ndp (int): Number of decoder points. Default is 4.
+            nh (int): Number of heads in multi-head attention. Default is 8.
+            ndl (int): Number of decoder layers. Default is 6.
+            d_ffn (int): Dimension of the feed-forward networks. Default is 1024.
+            dropout (float): Dropout rate. Default is 0.
+            act (nn.Module): Activation function. Default is nn.ReLU.
+            eval_idx (int): Evaluation index. Default is -1.
+            nd (int): Number of denoising. Default is 100.
+            label_noise_ratio (float): Label noise ratio. Default is 0.5.
+            box_noise_scale (float): Box noise scale. Default is 1.0.
+            learnt_init_query (bool): Whether to learn initial query embeddings. Default is False.
+        """
+        super().__init__(nc, ch)
+        self.detect = Detect.forward
+        self.hidden_dim = hd
+        self.nhead = nh
+        self.nl = len(ch)  # num level
+        self.nc = nc
+        self.num_queries = nq
+        self.num_decoder_layers = ndl
+
+        self.nm = nm  
+        self.npr = npr
+
+        # Backbone feature projection
+        self.input_proj = nn.ModuleList(nn.Sequential(nn.Conv2d(x, hd, 1, bias=False), nn.BatchNorm2d(hd)) for x in ch)
+        # NOTE: simplified version but it's not consistent with .pt weights.
+        # self.input_proj = nn.ModuleList(Conv(x, hd, act=False) for x in ch)
+
+        # Transformer module
+        decoder_layer = DeformableTransformerDecoderLayer(hd, nh, d_ffn, dropout, act, self.nl, ndp)
+        self.decoder = DeformableTransformerDecoder(hd, decoder_layer, ndl, eval_idx)
+
+        # Denoising part
+        self.denoising_class_embed = nn.Embedding(nc, hd)
+        self.num_denoising = nd
+        self.label_noise_ratio = label_noise_ratio
+        self.box_noise_scale = box_noise_scale
+
+        # Decoder embedding
+        self.learnt_init_query = learnt_init_query
+        if learnt_init_query:
+            self.tgt_embed = nn.Embedding(nq, hd)
+        self.query_pos_head = MLP(4, 2 * hd, hd, num_layers=2)
+        
+        # Encoder head
+        self.enc_output = nn.Sequential(nn.Linear(hd, hd), nn.LayerNorm(hd))
+        self.enc_score_head = nn.Linear(hd, nc)
+        # self.enc_bbox_head = MLP(hd, hd, 4, num_layers=3)
+
+        self.dec_mask_head = nn.ModuleList([nn.Linear(hd, nm) for _ in range(ndl)])
+        self.proto = Proto(ch[0], self.npr, self.nm)
+        self.enc_mask_head = nn.Linear(hd, nm)
+        self.bbox_proj = nn.Linear(4, hd)
+
+        # Decoder head
+        self.dec_score_head = nn.ModuleList([nn.Linear(hd, nc) for _ in range(ndl)])
+        self.dec_bbox_head = nn.ModuleList([MLP(hd, hd, 4, num_layers=3) for _ in range(ndl)])
+        self.shape = None
+
+        self._reset_parameters()
+        
+    def forward(self, x, batch=None, imgsz=None):
+        """Runs the forward pass of the module, returning bounding box and classification scores for the input."""
+        # Input projection and embedding
+        feats, shapes = self._get_encoder_input(x)
+
+        p = self.proto(x[0])  # shape: [bs, npr, h, w]
+        
+        dbox = self._generate_anchors(x)
+        dbox = dbox.permute(0, 2, 1)
+        dbox = dbox / torch.tensor(imgsz, device=dbox.device)[[1, 0, 1, 0]]
+
+        # Prepare denoising training
+        dn_embed, dn_bbox, attn_mask, dn_meta = get_cdn_group(
+            batch,
+            self.nc,
+            self.num_queries,
+            self.denoising_class_embed.weight,
+            self.num_denoising,
+            self.label_noise_ratio,
+            self.box_noise_scale,
+            False, # self.training, # get NaN when use self.training
+        )
+
+        embed, refer_bbox, enc_bboxes, enc_scores = self._get_decoder_input(feats, dbox, dn_embed, dn_bbox)
+
+        # Decoder
+        dec_bboxes, dec_scores = self.decoder(
+            embed,
+            refer_bbox,
+            feats,
+            shapes,
+            self.dec_bbox_head,
+            self.dec_score_head,
+            self.query_pos_head,
+            attn_mask=attn_mask,
+        )
+        
+        _, bs, num_queries, _ = dec_bboxes.shape
+        dec_bboxes_transformed = self.bbox_proj(dec_bboxes[0])
+        dec_mask_coeffs = torch.stack([self.dec_mask_head[i](dec_bboxes_transformed) for i in range(self.num_decoder_layers)])
+        dec_masks = torch.einsum("lbqm,bmhw->lbqhw", dec_mask_coeffs, p)  # [ndl, bs, num_queries, h, w]
+
+        enc_features = self.enc_output(feats)
+        enc_mask_coeffs = self.enc_mask_head(enc_features)  # [bs, h*w, nm]
+        topk_ind = torch.topk(enc_scores.max(-1).values, self.num_queries, dim=1).indices.view(-1)
+        batch_ind = torch.arange(end=bs, dtype=topk_ind.dtype).unsqueeze(-1).repeat(1, self.num_queries).view(-1)
+        enc_mask_coeffs = enc_mask_coeffs[batch_ind, topk_ind].view(bs, self.num_queries, self.nm)  # [bs, num_queries, nm]
+        enc_masks = torch.einsum("bqm,bmhw->bqhw", enc_mask_coeffs, p)  # [bs, num_queries, h, w]
+
+        x = dec_bboxes, dec_scores, dec_masks, enc_bboxes, enc_scores, enc_masks, dn_meta
+
+        if self.training:
+            return x
+        # (bs, 300, 4+nc+m)
+        y = torch.cat((dec_bboxes.squeeze(0), dec_scores.squeeze(0).sigmoid(), dec_mask_coeffs), -1)
+        y[..., :4] = y[..., :4] * torch.tensor(imgsz, device=y.device)[[1, 0, 1, 0]]
+        return y if self.export else (y, x)
+
+    def _get_encoder_input(self, x):
+        """Processes and returns encoder inputs by getting projection features from input and concatenating them."""
+        # Get projection features
+        x = [self.input_proj[i](feat) for i, feat in enumerate(x)]
+        # Get encoder inputs
+        feats = []
+        shapes = []
+        for feat in x:
+            h, w = feat.shape[2:]
+            # [b, c, h, w] -> [b, h*w, c]
+            feats.append(feat.flatten(2).permute(0, 2, 1))
+            # [nl, 2]
+            shapes.append([h, w])
+
+        # [b, h*w, c]
+        feats = torch.cat(feats, 1)
+        return feats, shapes
+    
+    def _generate_anchors(self, x):
+        for i in range(self.nl):
+            x[i] = self.cv2[i](x[i])
+        shape = x[0].shape  # BCHW
+        x_cat = torch.cat([xi.view(shape[0], self.reg_max * 4, -1) for xi in x], 2)
+        if self.shape != shape:
+            self.anchors, self.strides = (x.transpose(0, 1) for x in make_anchors(x, self.stride, 0.5))
+            self.shape = shape
+        dbox = self.decode_bboxes(x_cat)
+        return dbox
+
+    def _get_decoder_input(self, feats, dbox, dn_embed=None, dn_bbox=None):
+        """Generates and prepares the input required for the decoder from the provided features and shapes."""
+        bs = len(feats)
+        features = self.enc_output(feats)
+        
+        enc_outputs_scores = self.enc_score_head(features)  # (bs, h*w, nc)
+        
+        # Query selection
+        # (bs, num_queries)
+        topk_ind = torch.topk(enc_outputs_scores.max(-1).values, self.num_queries, dim=1).indices.view(-1)
+        # (bs, num_queries)
+        batch_ind = torch.arange(end=bs, dtype=topk_ind.dtype).unsqueeze(-1).repeat(1, self.num_queries).view(-1)
+
+        # (bs, num_queries, 256)
+        top_k_features = features[batch_ind, topk_ind].view(bs, self.num_queries, -1)
+
+        # Dynamic anchors + static content
+        refer_bbox = dbox[batch_ind, topk_ind].view(bs, self.num_queries, -1)
+
+        enc_bboxes = refer_bbox
+        if dn_bbox is not None:
+            refer_bbox = torch.cat([dn_bbox.sigmoid(), refer_bbox], 1)
+        enc_scores = enc_outputs_scores[batch_ind, topk_ind].view(bs, self.num_queries, -1)
+
+        embeddings = self.tgt_embed.weight.unsqueeze(0).repeat(bs, 1, 1) if self.learnt_init_query else top_k_features
+        if self.training:
+            refer_bbox = refer_bbox.detach()
+            if not self.learnt_init_query:
+                embeddings = embeddings.detach()
+        if dn_embed is not None:
+            embeddings = torch.cat([dn_embed, embeddings], 1)
+
+        return embeddings, refer_bbox, enc_bboxes, enc_scores
+
+    # TODO
+
+    # miss reset param for mask ********************************
+
+
+    def _reset_parameters(self):
+        """Initializes or resets the parameters of the model's various components with predefined weights and biases."""
+        # Class and bbox head init
+        bias_cls = bias_init_with_prob(0.01) / 80 * self.nc
+        # NOTE: the weight initialization in `linear_init` would cause NaN when training with custom datasets.
+        linear_init(self.enc_score_head)
+
+        constant_(self.enc_score_head.bias, bias_cls)
+        # constant_(self.enc_bbox_head.layers[-1].weight, 0.0)
+        # constant_(self.enc_bbox_head.layers[-1].bias, 0.0)
+
+        for cls_, reg_ in zip(self.dec_score_head, self.dec_bbox_head):
+            # linear_init(cls_)
+            constant_(cls_.bias, bias_cls)
+            constant_(reg_.layers[-1].weight, 0.0)
+            constant_(reg_.layers[-1].bias, 0.0)
+
+        linear_init(self.enc_output[0])
+        xavier_uniform_(self.enc_output[0].weight)
+        if self.learnt_init_query:
+            xavier_uniform_(self.tgt_embed.weight)
+        xavier_uniform_(self.query_pos_head.layers[0].weight)
+        xavier_uniform_(self.query_pos_head.layers[1].weight)
+        for layer in self.input_proj:
+            xavier_uniform_(layer[0].weight)
 
 def parse_model(d, ch):  # model_dict, input_channels(3)
     # Parse a YOLO model.yaml dictionary
@@ -766,6 +1034,8 @@ def parse_model(d, ch):  # model_dict, input_channels(3)
             c2 = ch[f] * args[0] ** 2
         elif m is Expand:
             c2 = ch[f] // args[0] ** 2
+        elif m is RTDETRSegment:  # special case, channels arg must be passed in index 1
+            args.insert(1, [ch[x] for x in f])
         else:
             c2 = ch[f]
 
