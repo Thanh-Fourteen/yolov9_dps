@@ -1,0 +1,14 @@
+python -m torch.distributed.launch --nproc_per_node 2 --master_port 9999 segment.py \
+    --sync-bn \
+    --workers 4 \
+    --device 0,1 \
+    --batch 4 \
+    --data data/coco.yaml \
+    --img 640 \
+    --cfg models/segment/gelan-c-seg.yaml \
+    --weights 'weights/gelan-c-seg.pt' \
+    --name "train_seg" \
+    --hyp data/hyps/hyp.scratch-high.yaml \
+    --epochs 3 \
+    --close-mosaic 15 \
+    --optimizer SGD

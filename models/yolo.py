@@ -723,13 +723,482 @@ class ClassificationModel(BaseModel):
         # Create a YOLO classification model from a *.yaml file
         self.model = None
 
+# class RTDETRSegment(Detect):
+#     """
+#     Real-Time Deformable Transformer Decoder (RTDETRDecoder) module for object detection.
+
+#     This decoder module utilizes Transformer architecture along with deformable convolutions to predict bounding boxes
+#     and class labels for objects in an image. It integrates features from multiple layers and runs through a series of
+#     Transformer decoder layers to output the final predictions.
+#     """
+
+#     export = False  # export mode
+
+#     def __init__(
+#         self,
+#         nc=80,
+#         ch=(512, 1024, 2048),
+#         hd=64,  # hidden dim
+#         nq=100,  # num queries
+#         ndp=4,  # num decoder points
+#         nh=8,  # num head
+#         ndl=6,  # num decoder layers
+#         d_ffn=1024,  # dim of feedforward
+#         dropout=0.0,
+#         act=nn.ReLU(),
+#         eval_idx=-1,
+#         # Training args
+#         nd=100,  # num denoising
+#         label_noise_ratio=0.5,
+#         box_noise_scale=1.0,
+#         learnt_init_query=False,
+
+#         nm=32,  # number of masks
+#         npr=256, # number of protos
+#     ):
+#         """
+#         Initializes the RTDETRDecoder module with the given parameters.
+
+#         Args:
+#             nc (int): Number of classes. Default is 80.
+#             ch (tuple): Channels in the backbone feature maps. Default is (512, 1024, 2048).
+#             hd (int): Dimension of hidden layers. Default is 256.
+#             nq (int): Number of query points. Default is 300.
+#             ndp (int): Number of decoder points. Default is 4.
+#             nh (int): Number of heads in multi-head attention. Default is 8.
+#             ndl (int): Number of decoder layers. Default is 6.
+#             d_ffn (int): Dimension of the feed-forward networks. Default is 1024.
+#             dropout (float): Dropout rate. Default is 0.
+#             act (nn.Module): Activation function. Default is nn.ReLU.
+#             eval_idx (int): Evaluation index. Default is -1.
+#             nd (int): Number of denoising. Default is 100.
+#             label_noise_ratio (float): Label noise ratio. Default is 0.5.
+#             box_noise_scale (float): Box noise scale. Default is 1.0.
+#             learnt_init_query (bool): Whether to learn initial query embeddings. Default is False.
+#         """
+#         super().__init__(nc, ch)
+#         self.detect = Detect.forward
+#         self.hidden_dim = hd
+#         self.nhead = nh
+#         self.nl = len(ch)  # num level
+#         self.nc = nc
+#         self.num_queries = nq
+#         self.num_decoder_layers = ndl
+
+#         self.nm = nm  
+#         self.npr = npr
+
+#         # Backbone feature projection
+#         self.input_proj = nn.ModuleList(nn.Sequential(nn.Conv2d(x, hd, 1, bias=False), nn.BatchNorm2d(hd)) for x in ch)
+#         # NOTE: simplified version but it's not consistent with .pt weights.
+#         # self.input_proj = nn.ModuleList(Conv(x, hd, act=False) for x in ch)
+
+#         # Transformer module
+#         decoder_layer = DeformableTransformerDecoderLayer(hd, nh, d_ffn, dropout, act, self.nl, ndp)
+#         self.decoder = DeformableTransformerDecoder(hd, decoder_layer, ndl, eval_idx)
+
+#         # Denoising part
+#         self.denoising_class_embed = nn.Embedding(nc, hd)
+#         self.num_denoising = nd
+#         self.label_noise_ratio = label_noise_ratio
+#         self.box_noise_scale = box_noise_scale
+
+#         # Decoder embedding
+#         self.learnt_init_query = learnt_init_query
+#         if learnt_init_query:
+#             self.tgt_embed = nn.Embedding(nq, hd)
+#         self.query_pos_head = MLP(4, 2 * hd, hd, num_layers=2)
+        
+#         # Encoder head
+#         self.enc_output = nn.Sequential(nn.Linear(hd, hd), nn.LayerNorm(hd))
+#         self.enc_score_head = nn.Linear(hd, nc)
+#         # self.enc_bbox_head = MLP(hd, hd, 4, num_layers=3)
+
+#         self.dec_mask_head = nn.ModuleList([nn.Linear(hd, nm) for _ in range(ndl)])
+#         self.proto = Proto(ch[0], self.npr, self.nm)
+#         self.enc_mask_head = nn.Linear(hd, nm)
+#         self.bbox_proj = nn.Linear(4, hd)
+
+#         # Decoder head
+#         self.dec_score_head = nn.ModuleList([nn.Linear(hd, nc) for _ in range(ndl)])
+#         self.dec_bbox_head = nn.ModuleList([MLP(hd, hd, 4, num_layers=3) for _ in range(ndl)])
+#         self.shape = None
+
+#         self._reset_parameters()
+        
+#     def forward(self, x, batch=None, imgsz=None):
+#         """Runs the forward pass of the module, returning bounding box and classification scores for the input."""
+#         # Input projection and embedding
+#         feats, shapes = self._get_encoder_input(x)
+
+#         p = self.proto(x[0])  # shape: [bs, npr, h, w]
+        
+#         dbox = self._generate_anchors(x)
+#         dbox = dbox.permute(0, 2, 1)
+#         dbox = dbox / torch.tensor(imgsz, device=dbox.device)[[1, 0, 1, 0]]
+
+#         # Prepare denoising training
+#         dn_embed, dn_bbox, attn_mask, dn_meta = get_cdn_group(
+#             batch,
+#             self.nc,
+#             self.num_queries,
+#             self.denoising_class_embed.weight,
+#             self.num_denoising,
+#             self.label_noise_ratio,
+#             self.box_noise_scale,
+#             False, # self.training, # get NaN when use self.training
+#         )
+
+#         embed, refer_bbox, enc_bboxes, enc_scores = self._get_decoder_input(feats, dbox, dn_embed, dn_bbox)
+
+#         # Decoder
+#         dec_bboxes, dec_scores = self.decoder(
+#             embed,
+#             refer_bbox,
+#             feats,
+#             shapes,
+#             self.dec_bbox_head,
+#             self.dec_score_head,
+#             self.query_pos_head,
+#             attn_mask=attn_mask,
+#         )
+        
+#         _, bs, num_queries, _ = dec_bboxes.shape
+#         dec_bboxes_transformed = self.bbox_proj(dec_bboxes[0])
+#         dec_mask_coeffs = torch.stack([self.dec_mask_head[i](dec_bboxes_transformed) for i in range(self.num_decoder_layers)])
+#         dec_masks = torch.einsum("lbqm,bmhw->lbqhw", dec_mask_coeffs, p)  # [ndl, bs, num_queries, h, w]
+
+#         enc_features = self.enc_output(feats)
+#         enc_mask_coeffs = self.enc_mask_head(enc_features)  # [bs, h*w, nm]
+#         topk_ind = torch.topk(enc_scores.max(-1).values, self.num_queries, dim=1).indices.view(-1)
+#         batch_ind = torch.arange(end=bs, dtype=topk_ind.dtype).unsqueeze(-1).repeat(1, self.num_queries).view(-1)
+#         enc_mask_coeffs = enc_mask_coeffs[batch_ind, topk_ind].view(bs, self.num_queries, self.nm)  # [bs, num_queries, nm]
+#         enc_masks = torch.einsum("bqm,bmhw->bqhw", enc_mask_coeffs, p)  # [bs, num_queries, h, w]
+
+#         x = dec_bboxes, dec_scores, dec_masks, enc_bboxes, enc_scores, enc_masks, dn_meta
+
+#         if self.training:
+#             return x
+#         # (bs, 300, 4+nc+m)
+#         y = torch.cat((dec_bboxes.squeeze(0), dec_scores.squeeze(0).sigmoid(), dec_mask_coeffs), -1)
+#         y[..., :4] = y[..., :4] * torch.tensor(imgsz, device=y.device)[[1, 0, 1, 0]]
+#         return y if self.export else (y, x)
+
+#     def _get_encoder_input(self, x):
+#         """Processes and returns encoder inputs by getting projection features from input and concatenating them."""
+#         # Get projection features
+#         x = [self.input_proj[i](feat) for i, feat in enumerate(x)]
+#         # Get encoder inputs
+#         feats = []
+#         shapes = []
+#         for feat in x:
+#             h, w = feat.shape[2:]
+#             # [b, c, h, w] -> [b, h*w, c]
+#             feats.append(feat.flatten(2).permute(0, 2, 1))
+#             # [nl, 2]
+#             shapes.append([h, w])
+
+#         # [b, h*w, c]
+#         feats = torch.cat(feats, 1)
+#         return feats, shapes
+    
+#     def _generate_anchors(self, x):
+#         for i in range(self.nl):
+#             x[i] = self.cv2[i](x[i])
+#         shape = x[0].shape  # BCHW
+#         x_cat = torch.cat([xi.view(shape[0], self.reg_max * 4, -1) for xi in x], 2)
+#         if self.shape != shape:
+#             self.anchors, self.strides = (x.transpose(0, 1) for x in make_anchors(x, self.stride, 0.5))
+#             self.shape = shape
+#         dbox = self.decode_bboxes(x_cat)
+#         return dbox
+
+#     def _get_decoder_input(self, feats, dbox, dn_embed=None, dn_bbox=None):
+#         """Generates and prepares the input required for the decoder from the provided features and shapes."""
+#         bs = len(feats)
+#         features = self.enc_output(feats)
+        
+#         enc_outputs_scores = self.enc_score_head(features)  # (bs, h*w, nc)
+        
+#         # Query selection
+#         # (bs, num_queries)
+#         topk_ind = torch.topk(enc_outputs_scores.max(-1).values, self.num_queries, dim=1).indices.view(-1)
+#         # (bs, num_queries)
+#         batch_ind = torch.arange(end=bs, dtype=topk_ind.dtype).unsqueeze(-1).repeat(1, self.num_queries).view(-1)
+
+#         # (bs, num_queries, 256)
+#         top_k_features = features[batch_ind, topk_ind].view(bs, self.num_queries, -1)
+
+#         # Dynamic anchors + static content
+#         refer_bbox = dbox[batch_ind, topk_ind].view(bs, self.num_queries, -1)
+
+#         enc_bboxes = refer_bbox
+#         if dn_bbox is not None:
+#             refer_bbox = torch.cat([dn_bbox.sigmoid(), refer_bbox], 1)
+#         enc_scores = enc_outputs_scores[batch_ind, topk_ind].view(bs, self.num_queries, -1)
+
+#         embeddings = self.tgt_embed.weight.unsqueeze(0).repeat(bs, 1, 1) if self.learnt_init_query else top_k_features
+#         if self.training:
+#             refer_bbox = refer_bbox.detach()
+#             if not self.learnt_init_query:
+#                 embeddings = embeddings.detach()
+#         if dn_embed is not None:
+#             embeddings = torch.cat([dn_embed, embeddings], 1)
+
+#         return embeddings, refer_bbox, enc_bboxes, enc_scores
+
+#     # TODO
+
+#     # miss reset param for mask ********************************
+
+
+#     def _reset_parameters(self):
+#         """Initializes or resets the parameters of the model's various components with predefined weights and biases."""
+#         # Class and bbox head init
+#         bias_cls = bias_init_with_prob(0.01) / 80 * self.nc
+#         # NOTE: the weight initialization in `linear_init` would cause NaN when training with custom datasets.
+#         linear_init(self.enc_score_head)
+
+#         constant_(self.enc_score_head.bias, bias_cls)
+#         # constant_(self.enc_bbox_head.layers[-1].weight, 0.0)
+#         # constant_(self.enc_bbox_head.layers[-1].bias, 0.0)
+
+#         for cls_, reg_ in zip(self.dec_score_head, self.dec_bbox_head):
+#             # linear_init(cls_)
+#             constant_(cls_.bias, bias_cls)
+#             constant_(reg_.layers[-1].weight, 0.0)
+#             constant_(reg_.layers[-1].bias, 0.0)
+
+#         linear_init(self.enc_output[0])
+#         xavier_uniform_(self.enc_output[0].weight)
+#         if self.learnt_init_query:
+#             xavier_uniform_(self.tgt_embed.weight)
+#         xavier_uniform_(self.query_pos_head.layers[0].weight)
+#         xavier_uniform_(self.query_pos_head.layers[1].weight)
+#         for layer in self.input_proj:
+#             xavier_uniform_(layer[0].weight)
+
+def _expand(tensor, length: int):
+    return tensor.unsqueeze(1).repeat(1, int(length), 1, 1, 1).flatten(0, 1)
+
+class DetrMaskHeadSmallConv(nn.Module):
+    """
+    Simple convolutional head, using group norm. Upsampling is done using a FPN approach
+    """
+
+    def __init__(self, dim, fpn_dims, context_dim):
+        super().__init__()
+
+        if dim % 8 != 0:
+            raise ValueError(
+                "The hidden_size + number of attention heads must be divisible by 8 as the number of groups in"
+                " GroupNorm is set to 8"
+            )
+
+        inter_dims = [dim, context_dim // 2, context_dim // 4, context_dim // 8, context_dim // 16, context_dim // 64]
+
+        self.lay1 = nn.Conv2d(dim, dim, 3, padding=1)
+        self.gn1 = nn.GroupNorm(8, dim)
+        self.lay2 = nn.Conv2d(dim, inter_dims[1], 3, padding=1)
+        self.gn2 = nn.GroupNorm(min(8, inter_dims[1]), inter_dims[1])
+        self.lay3 = nn.Conv2d(inter_dims[1], inter_dims[2], 3, padding=1)
+        self.gn3 = nn.GroupNorm(min(8, inter_dims[2]), inter_dims[2])
+        self.lay4 = nn.Conv2d(inter_dims[2], inter_dims[3], 3, padding=1)
+        self.gn4 = nn.GroupNorm(min(8, inter_dims[3]), inter_dims[3])
+        self.lay5 = nn.Conv2d(inter_dims[3], inter_dims[4], 3, padding=1)
+        self.gn5 = nn.GroupNorm(min(8, inter_dims[4]), inter_dims[4])
+        self.out_lay = nn.Conv2d(inter_dims[4], 1, 3, padding=1)
+
+        self.dim = dim
+
+        self.adapter1 = nn.Conv2d(fpn_dims[0], inter_dims[1], 1)
+        self.adapter2 = nn.Conv2d(fpn_dims[1], inter_dims[2], 1)
+        self.adapter3 = nn.Conv2d(fpn_dims[2], inter_dims[3], 1)
+
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                nn.init.kaiming_uniform_(m.weight, a=1)
+                nn.init.constant_(m.bias, 0)
+
+    def forward(self, x, bbox_mask, fpns):
+        # here we concatenate x, the projected feature map, of shape (batch_size, d_model, heigth/32, width/32) with
+        # the bbox_mask = the attention maps of shape (batch_size, n_queries, n_heads, height/32, width/32).
+        # We expand the projected feature map to match the number of heads.
+        x = torch.cat([_expand(x, bbox_mask.shape[1]), bbox_mask.flatten(0, 1)], 1)
+
+        x = self.lay1(x)
+        x = self.gn1(x)
+        x = nn.functional.relu(x)
+        x = self.lay2(x)
+        x = self.gn2(x)
+        x = nn.functional.relu(x)
+
+        cur_fpn = self.adapter1(fpns[0])
+        if cur_fpn.size(0) != x.size(0):
+            cur_fpn = _expand(cur_fpn, x.size(0) // cur_fpn.size(0))
+        x = cur_fpn + nn.functional.interpolate(x, size=cur_fpn.shape[-2:], mode="nearest")
+        x = self.lay3(x)
+        x = self.gn3(x)
+        x = nn.functional.relu(x)
+
+        cur_fpn = self.adapter2(fpns[1])
+        if cur_fpn.size(0) != x.size(0):
+            cur_fpn = _expand(cur_fpn, x.size(0) // cur_fpn.size(0))
+        x = cur_fpn + nn.functional.interpolate(x, size=cur_fpn.shape[-2:], mode="nearest")
+        x = self.lay4(x)
+        x = self.gn4(x)
+        x = nn.functional.relu(x)
+
+        cur_fpn = self.adapter3(fpns[2])
+        if cur_fpn.size(0) != x.size(0):
+            cur_fpn = _expand(cur_fpn, x.size(0) // cur_fpn.size(0))
+        x = cur_fpn + nn.functional.interpolate(x, size=cur_fpn.shape[-2:], mode="nearest")
+        x = self.lay5(x)
+        x = self.gn5(x)
+        x = nn.functional.relu(x)
+
+        x = self.out_lay(x)
+        return x
+
+
+class DetrMHAttentionMap(nn.Module):
+    """This is a 2D attention module, which only returns the attention softmax (no multiplication by value)"""
+
+    def __init__(self, query_dim, hidden_dim, num_heads, dropout=0.0, bias=True, std=None):
+        super().__init__()
+        self.num_heads = num_heads
+        self.hidden_dim = hidden_dim
+        self.dropout = nn.Dropout(dropout)
+
+        self.q_linear = nn.Linear(query_dim, hidden_dim, bias=bias)
+        self.k_linear = nn.Linear(query_dim, hidden_dim, bias=bias)
+
+        self.normalize_fact = float(hidden_dim / self.num_heads) ** -0.5
+
+    def forward(self, q, k, mask = None):
+        q = self.q_linear(q)
+        k = nn.functional.conv2d(k, self.k_linear.weight.unsqueeze(-1).unsqueeze(-1), self.k_linear.bias)
+        queries_per_head = q.view(q.shape[0], q.shape[1], self.num_heads, self.hidden_dim // self.num_heads)
+        keys_per_head = k.view(k.shape[0], self.num_heads, self.hidden_dim // self.num_heads, k.shape[-2], k.shape[-1])
+        weights = torch.einsum("bqnc,bnchw->bqnhw", queries_per_head * self.normalize_fact, keys_per_head)
+
+        if mask is not None:
+            weights = weights.masked_fill(mask.unsqueeze(1).unsqueeze(1), torch.finfo(weights.dtype).min)
+        weights = nn.functional.softmax(weights.flatten(2), dim=-1).view(weights.size())
+        weights = self.dropout(weights)
+        return weights
+
+
+def _expand(tensor, num_repeats):
+    """Mở rộng tensor theo chiều batch."""
+    return tensor.unsqueeze(1).repeat(1, num_repeats, 1, 1, 1).flatten(0, 1)
+
+class DetrMaskHeadSmallConv(nn.Module):
+    """
+    Simple convolutional head, using group norm. Upsampling is done using a FPN approach
+    """
+    def __init__(self, dim, fpn_dims, context_dim):
+        super().__init__()
+        if dim % 8 != 0:
+            raise ValueError(
+                "The hidden_size + number of attention heads must be divisible by 8 as the number of groups in"
+                " GroupNorm is set to 8"
+            )
+
+        inter_dims = [dim, context_dim // 2, context_dim // 4, context_dim // 8, context_dim // 16, context_dim // 64]
+
+        self.lay1 = nn.Conv2d(dim, dim, 3, padding=1)
+        self.gn1 = nn.GroupNorm(8, dim)
+        self.lay2 = nn.Conv2d(dim, inter_dims[1], 3, padding=1)
+        self.gn2 = nn.GroupNorm(min(8, inter_dims[1]), inter_dims[1])
+        self.lay3 = nn.Conv2d(inter_dims[1], inter_dims[2], 3, padding=1)
+        self.gn3 = nn.GroupNorm(min(8, inter_dims[2]), inter_dims[2])
+        self.lay4 = nn.Conv2d(inter_dims[2], inter_dims[3], 3, padding=1)
+        self.gn4 = nn.GroupNorm(min(8, inter_dims[3]), inter_dims[3])
+        self.lay5 = nn.Conv2d(inter_dims[3], inter_dims[4], 3, padding=1)
+        self.gn5 = nn.GroupNorm(min(8, inter_dims[4]), inter_dims[4])
+        self.out_lay = nn.Conv2d(inter_dims[4], 1, 3, padding=1)
+
+        self.dim = dim
+
+        self.adapter1 = nn.Conv2d(fpn_dims[0], inter_dims[1], 1)
+        self.adapter2 = nn.Conv2d(fpn_dims[1], inter_dims[2], 1)
+        self.adapter3 = nn.Conv2d(fpn_dims[2], inter_dims[3], 1)
+
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                nn.init.kaiming_uniform_(m.weight, a=1)
+                nn.init.constant_(m.bias, 0)
+
+    def forward(self, x, bbox_mask, fpns):
+        x = torch.cat([_expand(x, bbox_mask.shape[1]), bbox_mask.flatten(0, 1)], 1)
+
+        x = self.lay1(x)
+        x = self.gn1(x)
+        x = F.relu(x)
+        x = self.lay2(x)
+        x = self.gn2(x)
+        x = F.relu(x)
+
+        cur_fpn = self.adapter1(fpns[0])
+        if cur_fpn.size(0) != x.size(0):
+            cur_fpn = _expand(cur_fpn, x.size(0) // cur_fpn.size(0))
+        x = cur_fpn + F.interpolate(x, size=cur_fpn.shape[-2:], mode="nearest")
+        x = self.lay3(x)
+        x = self.gn3(x)
+        x = F.relu(x)
+
+        cur_fpn = self.adapter2(fpns[1])
+        if cur_fpn.size(0) != x.size(0):
+            cur_fpn = _expand(cur_fpn, x.size(0) // cur_fpn.size(0))
+        x = cur_fpn + F.interpolate(x, size=cur_fpn.shape[-2:], mode="nearest")
+        x = self.lay4(x)
+        x = self.gn4(x)
+        x = F.relu(x)
+
+        cur_fpn = self.adapter3(fpns[2])
+        if cur_fpn.size(0) != x.size(0):
+            cur_fpn = _expand(cur_fpn, x.size(0) // cur_fpn.size(0))
+        x = cur_fpn + F.interpolate(x, size=cur_fpn.shape[-2:], mode="nearest")
+        x = self.lay5(x)
+        x = self.gn5(x)
+        x = F.relu(x)
+
+        x = self.out_lay(x)
+        return x
+
+class DetrMHAttentionMap(nn.Module):
+    """This is a 2D attention module, which only returns the attention softmax (no multiplication by value)"""
+    def __init__(self, query_dim, hidden_dim, num_heads, dropout=0.0, bias=True, std=None):
+        super().__init__()
+        self.num_heads = num_heads
+        self.hidden_dim = hidden_dim
+        self.dropout = nn.Dropout(dropout)
+
+        self.q_linear = nn.Linear(query_dim, hidden_dim, bias=bias)
+        self.k_linear = nn.Linear(query_dim, hidden_dim, bias=bias)
+
+        self.normalize_fact = float(hidden_dim / self.num_heads) ** -0.5
+
+    def forward(self, q, k, mask = None):
+        q = self.q_linear(q)
+        k = F.conv2d(k, self.k_linear.weight.unsqueeze(-1).unsqueeze(-1), self.k_linear.bias)
+        queries_per_head = q.view(q.shape[0], q.shape[1], self.num_heads, self.hidden_dim // self.num_heads)
+        keys_per_head = k.view(k.shape[0], self.num_heads, self.hidden_dim // self.num_heads, k.shape[-2], k.shape[-1])
+        weights = torch.einsum("bqnc,bnchw->bqnhw", queries_per_head * self.normalize_fact, keys_per_head)
+
+        if mask is not None:
+            weights = weights.masked_fill(mask.unsqueeze(1).unsqueeze(1), torch.finfo(weights.dtype).min)
+        weights = F.softmax(weights.flatten(2), dim=-1).view(weights.size())
+        weights = self.dropout(weights)
+        return weights
+
 class RTDETRSegment(Detect):
     """
-    Real-Time Deformable Transformer Decoder (RTDETRDecoder) module for object detection.
+    Real-Time Deformable Transformer Decoder (RTDETRDecoder) module for object detection and segmentation.
 
-    This decoder module utilizes Transformer architecture along with deformable convolutions to predict bounding boxes
-    and class labels for objects in an image. It integrates features from multiple layers and runs through a series of
-    Transformer decoder layers to output the final predictions.
+    This decoder module utilizes Transformer architecture along with deformable convolutions to predict bounding boxes,
+    class labels, and segmentation masks for objects in an image.
     """
 
     export = False  # export mode
@@ -752,30 +1221,7 @@ class RTDETRSegment(Detect):
         label_noise_ratio=0.5,
         box_noise_scale=1.0,
         learnt_init_query=False,
-
-        nm=32,  # number of masks
-        npr=256, # number of protos
     ):
-        """
-        Initializes the RTDETRDecoder module with the given parameters.
-
-        Args:
-            nc (int): Number of classes. Default is 80.
-            ch (tuple): Channels in the backbone feature maps. Default is (512, 1024, 2048).
-            hd (int): Dimension of hidden layers. Default is 256.
-            nq (int): Number of query points. Default is 300.
-            ndp (int): Number of decoder points. Default is 4.
-            nh (int): Number of heads in multi-head attention. Default is 8.
-            ndl (int): Number of decoder layers. Default is 6.
-            d_ffn (int): Dimension of the feed-forward networks. Default is 1024.
-            dropout (float): Dropout rate. Default is 0.
-            act (nn.Module): Activation function. Default is nn.ReLU.
-            eval_idx (int): Evaluation index. Default is -1.
-            nd (int): Number of denoising. Default is 100.
-            label_noise_ratio (float): Label noise ratio. Default is 0.5.
-            box_noise_scale (float): Box noise scale. Default is 1.0.
-            learnt_init_query (bool): Whether to learn initial query embeddings. Default is False.
-        """
         super().__init__(nc, ch)
         self.detect = Detect.forward
         self.hidden_dim = hd
@@ -785,13 +1231,8 @@ class RTDETRSegment(Detect):
         self.num_queries = nq
         self.num_decoder_layers = ndl
 
-        self.nm = nm  
-        self.npr = npr
-
         # Backbone feature projection
         self.input_proj = nn.ModuleList(nn.Sequential(nn.Conv2d(x, hd, 1, bias=False), nn.BatchNorm2d(hd)) for x in ch)
-        # NOTE: simplified version but it's not consistent with .pt weights.
-        # self.input_proj = nn.ModuleList(Conv(x, hd, act=False) for x in ch)
 
         # Transformer module
         decoder_layer = DeformableTransformerDecoderLayer(hd, nh, d_ffn, dropout, act, self.nl, ndp)
@@ -812,27 +1253,35 @@ class RTDETRSegment(Detect):
         # Encoder head
         self.enc_output = nn.Sequential(nn.Linear(hd, hd), nn.LayerNorm(hd))
         self.enc_score_head = nn.Linear(hd, nc)
-        # self.enc_bbox_head = MLP(hd, hd, 4, num_layers=3)
-
-        self.dec_mask_head = nn.ModuleList([nn.Linear(hd, nm) for _ in range(ndl)])
-        self.proto = Proto(ch[0], self.npr, self.nm)
-        self.enc_mask_head = nn.Linear(hd, nm)
-        self.bbox_proj = nn.Linear(4, hd)
 
         # Decoder head
         self.dec_score_head = nn.ModuleList([nn.Linear(hd, nc) for _ in range(ndl)])
         self.dec_bbox_head = nn.ModuleList([MLP(hd, hd, 4, num_layers=3) for _ in range(ndl)])
         self.shape = None
 
+        # Segmentation components
+        self.bbox_attention = DetrMHAttentionMap(
+            query_dim=hd,
+            hidden_dim=hd,
+            num_heads=nh,
+            dropout=dropout
+        )
+        self.mask_head = DetrMaskHeadSmallConv(
+            dim=hd + nh,  # Kết hợp hidden_dim và số đầu chú ý
+            fpn_dims=[hd, hd, hd],  # Sử dụng hd (64) cho tất cả mức FPN
+            context_dim=hd
+        )
+
         self._reset_parameters()
         
     def forward(self, x, batch=None, imgsz=None):
-        """Runs the forward pass of the module, returning bounding box and classification scores for the input."""
+        """Runs the forward pass, returning bounding boxes, class scores, and segmentation masks."""
         # Input projection and embedding
         feats, shapes = self._get_encoder_input(x)
-
-        p = self.proto(x[0])  # shape: [bs, npr, h, w]
         
+        # Lưu trữ các bản đồ đặc trưng FPN
+        fpns = [self.input_proj[i](x[i]) for i in range(self.nl)]
+
         dbox = self._generate_anchors(x)
         dbox = dbox.permute(0, 2, 1)
         dbox = dbox / torch.tensor(imgsz, device=dbox.device)[[1, 0, 1, 0]]
@@ -852,7 +1301,7 @@ class RTDETRSegment(Detect):
         embed, refer_bbox, enc_bboxes, enc_scores = self._get_decoder_input(feats, dbox, dn_embed, dn_bbox)
 
         # Decoder
-        dec_bboxes, dec_scores = self.decoder(
+        sequence_output, dec_bboxes, dec_scores = self.decoder(
             embed,
             refer_bbox,
             feats,
@@ -862,27 +1311,70 @@ class RTDETRSegment(Detect):
             self.query_pos_head,
             attn_mask=attn_mask,
         )
+
+        # Segmentation
+        proj_feat = fpns[-1]  
+        batch_size = proj_feat.shape[0]
         
-        _, bs, num_queries, _ = dec_bboxes.shape
-        dec_bboxes_transformed = self.bbox_proj(dec_bboxes[0])
-        dec_mask_coeffs = torch.stack([self.dec_mask_head[i](dec_bboxes_transformed) for i in range(self.num_decoder_layers)])
-        dec_masks = torch.einsum("lbqm,bmhw->lbqhw", dec_mask_coeffs, p)  # [ndl, bs, num_queries, h, w]
-
-        enc_features = self.enc_output(feats)
-        enc_mask_coeffs = self.enc_mask_head(enc_features)  # [bs, h*w, nm]
-        topk_ind = torch.topk(enc_scores.max(-1).values, self.num_queries, dim=1).indices.view(-1)
-        batch_ind = torch.arange(end=bs, dtype=topk_ind.dtype).unsqueeze(-1).repeat(1, self.num_queries).view(-1)
-        enc_mask_coeffs = enc_mask_coeffs[batch_ind, topk_ind].view(bs, self.num_queries, self.nm)  # [bs, num_queries, nm]
-        enc_masks = torch.einsum("bqm,bmhw->bqhw", enc_mask_coeffs, p)  # [bs, num_queries, h, w]
-
-        x = dec_bboxes, dec_scores, dec_masks, enc_bboxes, enc_scores, enc_masks, dn_meta
-
+        enc_bbox_mask = self.bbox_attention(embed, proj_feat)  # embed là top_k_features từ encoder
+        enc_seg_masks = self.mask_head(proj_feat, enc_bbox_mask, fpns[-3:])
+        enc_seg_masks = enc_seg_masks.view(batch_size, self.num_queries, 1, enc_seg_masks.shape[-2], enc_seg_masks.shape[-1])
+        enc_seg_masks = enc_seg_masks.squeeze(2)  # (batch_size, num_queries, h', w')
+        enc_seg_masks_resized = F.interpolate(enc_seg_masks, size=shapes[0], mode='bilinear', align_corners=False)
+        
         if self.training:
-            return x
-        # (bs, 300, 4+nc+m)
-        y = torch.cat((dec_bboxes.squeeze(0), dec_scores.squeeze(0).sigmoid(), dec_mask_coeffs), -1)
+            # sequence_output: (num_decoder, batch_size, num_queries, hidden_dim)
+            seg_masks_list = []
+            for layer_output in sequence_output:  
+                bbox_mask = self.bbox_attention(layer_output, proj_feat)  # (batch_size, num_queries, nhead, h, w)
+                seg_masks = self.mask_head(proj_feat, bbox_mask, fpns[-3:])  # (batch_size * num_queries, 1, h', w')
+                seg_masks = seg_masks.view(batch_size, self.num_queries, 1, seg_masks.shape[-2], seg_masks.shape[-1])
+                seg_masks = seg_masks.squeeze(2)  # (batch_size, num_queries, h', w')
+                seg_masks_resized = F.interpolate(seg_masks, size=shapes[0], mode='bilinear', align_corners=False)
+                seg_masks_list.append(seg_masks_resized)
+            dec_seg_masks_resized = torch.stack(seg_masks_list)  # (num_decoder, batch_size, num_queries, H, W)
+        else:
+            # sequence_output: (batch_size, num_queries, hidden_dim)
+            bbox_mask = self.bbox_attention(sequence_output, proj_feat)
+            seg_masks = self.mask_head(proj_feat, bbox_mask, fpns[-3:])
+            seg_masks = seg_masks.view(batch_size, self.num_queries, 1, seg_masks.shape[-2], seg_masks.shape[-1])
+            seg_masks = seg_masks.squeeze(2)
+            dec_seg_masks_resized = F.interpolate(seg_masks, size=shapes[0], mode='bilinear', align_corners=False)
+            dec_seg_masks_resized = dec_seg_masks_resized.unsqueeze(0)  # (1, batch_size, num_queries, H, W)
+
+        # Giảm chiều mặt nạ phân đoạn thành 1 giá trị cho mỗi truy vấn (dùng trong y)
+        seg_masks_flat = dec_seg_masks_resized.mean(dim=[-2, -1], keepdim=True)
+
+        # # Trong chế độ huấn luyện, sequence_output là stack của tất cả các tầng
+        # # Lấy tầng cuối cùng cho phân đoạn
+        # final_sequence_output = sequence_output[-1] if self.training else sequence_output
+
+        # # Tính bản đồ chú ý
+        # bbox_mask = self.bbox_attention(final_sequence_output, proj_feat)  # (batch_size, num_queries, nhead, h, w)
+
+        # # Tạo mặt nạ phân đoạn
+        # seg_masks = self.mask_head(proj_feat, bbox_mask, fpns[-3:])  # (batch_size * num_queries, 1, h', w')
+        # batch_size = proj_feat.shape[0]
+        # seg_masks = seg_masks.view(batch_size, self.num_queries, 1, seg_masks.shape[-2], seg_masks.shape[-1])
+        # seg_masks = seg_masks.squeeze(2)  # (batch_size, num_queries, h', w')
+
+        # # Điều chỉnh kích thước mặt nạ về kích thước hình ảnh gốc
+        # seg_masks_resized = F.interpolate(seg_masks, size=imgsz, mode='bilinear', align_corners=False)
+        # seg_masks_flat = seg_masks_resized.mean(dim=[2, 3], keepdim=True)  # (batch_size, num_queries, 1)
+
+        # Chuẩn bị đầu ra
+        x_out = (dec_bboxes, dec_scores, dec_seg_masks_resized, enc_bboxes, enc_scores, enc_seg_masks_resized, dn_meta)
+        if self.training:
+            return x_out
+
+        # (bs, num_queries, 4+nc+m)
+        y = torch.cat((
+            dec_bboxes.squeeze(0),              # (batch_size, num_queries, 4)
+            dec_scores.squeeze(0).sigmoid(),    # (batch_size, num_queries, nc)
+            seg_masks_flat.squeeze(0)           # (batch_size, num_queries, 1)
+        ), dim=-1)
         y[..., :4] = y[..., :4] * torch.tensor(imgsz, device=y.device)[[1, 0, 1, 0]]
-        return y if self.export else (y, x)
+        return y if self.export else (y, x_out)
 
     def _get_encoder_input(self, x):
         """Processes and returns encoder inputs by getting projection features from input and concatenating them."""
@@ -946,11 +1438,6 @@ class RTDETRSegment(Detect):
             embeddings = torch.cat([dn_embed, embeddings], 1)
 
         return embeddings, refer_bbox, enc_bboxes, enc_scores
-
-    # TODO
-
-    # miss reset param for mask ********************************
-
 
     def _reset_parameters(self):
         """Initializes or resets the parameters of the model's various components with predefined weights and biases."""

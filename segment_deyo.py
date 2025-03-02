@@ -305,7 +305,10 @@ def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictio
 
                     for i in range(bs):
                         unique_val = gt_groups[i] 
-                        mask_slices = torch.stack([(masks[i] == val) for val in range(1, unique_val + 1)]).float()
+                        if unique_val > 0: 
+                            mask_slices = torch.stack([(masks[i] == val) for val in range(1, unique_val + 1)]).float()
+                        else:
+                            mask_slices = torch.empty(0)
                         unique_masks.append(mask_slices)
                    
                     _targets = {
@@ -482,7 +485,6 @@ def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictio
     torch.cuda.empty_cache()
     return results
 
-
 def parse_opt(known=False):
     parser = argparse.ArgumentParser()
     parser.add_argument('--weights', type=str, default="weights/gelan-c-seg.pt", help='initial weights path')
@@ -490,8 +492,8 @@ def parse_opt(known=False):
     parser.add_argument('--data', type=str, default='data/coco.yaml', help='dataset.yaml path')
     parser.add_argument('--hyp', type=str, default='data/hyps/hyp.scratch-high.yaml', help='hyperparameters path')
     parser.add_argument('--epochs', type=int, default=3, help='total training epochs')
-    parser.add_argument('--batch-size', type=int, default=2, help='total batch size for all GPUs, -1 for autobatch')
-    parser.add_argument('--imgsz', '--img', '--img-size', type=int, default=320, help='train, val image size (pixels)')
+    parser.add_argument('--batch-size', type=int, default=1, help='total batch size for all GPUs, -1 for autobatch')
+    parser.add_argument('--imgsz', '--img', '--img-size', type=int, default=640, help='train, val image size (pixels)')
     parser.add_argument('--rect', action='store_true', help='rectangular training')
     parser.add_argument('--resume', nargs='?', const=True, default=False, help='resume most recent training')
     parser.add_argument('--nosave', action='store_true', help='only save final checkpoint')
@@ -518,7 +520,7 @@ def parse_opt(known=False):
     parser.add_argument('--freeze', nargs='+', type=int, default=[0], help='Freeze layers: backbone=10, first3=0 1 2')
     parser.add_argument('--save-period', type=int, default=-1, help='Save checkpoint every x epochs (disabled if < 1)')
     parser.add_argument('--seed', type=int, default=0, help='Global training seed')
-    parser.add_argument('--local_rank', type=int, default=-1, help='Automatic DDP Multi-GPU argument, do not modify')
+    parser.add_argument('--local-rank', type=int, default=-1, help='Automatic DDP Multi-GPU argument, do not modify')
     parser.add_argument('--close-mosaic', type=int, default=10, help='Experimental')
 
     # Instance Segmentation Args
@@ -681,3 +683,24 @@ def run(**kwargs):
 if __name__ == "__main__":
     opt = parse_opt()
     main(opt)
+
+
+# if __name__ == '__main__':
+#     # Khởi tạo mô hình
+#     from models.yolo import RTDETRSegment
+#     model = RTDETRSegment(nc=80, ch=(512, 1024, 2048), hd=64, nq=100, nh=8, ndl=6)
+
+#     # Đầu vào giả lập
+#     x = [torch.randn(1, 512, 32, 32), torch.randn(1, 1024, 16, 16), torch.randn(1, 2048, 8, 8)]
+#     imgsz = (640, 640)
+
+#     # Chạy forward
+#     output = model(x, imgsz=imgsz)
+
+#     # Trong chế độ suy luận không export
+#     y, x_out = output
+#     dec_bboxes, dec_scores, enc_bboxes, enc_scores, dn_meta, seg_masks_resized = x_out
+
+#     print("Bounding boxes:", dec_bboxes.shape)      # (num_layers, batch_size, num_queries, 4)
+#     print("Class scores:", dec_scores.shape)        # (num_layers, batch_size, num_queries, nc)
+#     print("Segmentation masks:", seg_masks_resized.shape)  # (batch_size, num_queries, 640, 640)

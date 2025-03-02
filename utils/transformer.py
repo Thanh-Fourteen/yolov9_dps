@@ -438,10 +438,12 @@ class DeformableTransformerDecoder(nn.Module):
         output = embed
         dec_bboxes = []
         dec_cls = []
+        sequence_outputs = []  # Lưu trữ sequence_output từ mỗi tầng
         last_refined_bbox = None
-        # refer_bbox = refer_bbox.sigmoid()
+
         for i, layer in enumerate(self.layers):
             output = layer(output, refer_bbox, feats, shapes, padding_mask, attn_mask, pos_mlp(refer_bbox))
+            sequence_outputs.append(output)  # Lưu sequence_output
 
             bbox = bbox_head[i](output)
             refined_bbox = torch.sigmoid(bbox + inverse_sigmoid(refer_bbox))
@@ -460,4 +462,6 @@ class DeformableTransformerDecoder(nn.Module):
             last_refined_bbox = refined_bbox
             refer_bbox = refined_bbox.detach() if self.training else refined_bbox
 
-        return torch.stack(dec_bboxes), torch.stack(dec_cls)
+        # Trả về sequence_output từ tầng cuối cùng hoặc tất cả các tầng nếu huấn luyện
+        final_sequence_output = sequence_outputs[-1] if not self.training else torch.stack(sequence_outputs)
+        return final_sequence_output, torch.stack(dec_bboxes), torch.stack(dec_cls)

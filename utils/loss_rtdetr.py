@@ -394,10 +394,10 @@ class DETRLoss(nn.Module):
         return (batch_idx, src_idx), dst_idx
 
     def _get_assigned_bboxes(self, pred_bboxes, gt_bboxes, match_indices, gt_groups):
-        """Assigns predicted bounding boxes to ground truth bounding boxes based on the match indices."""                
+        """Assigns predicted bounding boxes to ground truth bounding boxes based on the match indices."""                      
         pred_assigned = torch.cat(
             [
-                t[i] if len(i) > 0 else torch.zeros(0, t.shape[-1], device=self.device)
+                t[i] if len(i) > 0 else torch.zeros((0,) + t.shape[1:], device=self.device)
                 for t, (i, _) in zip(pred_bboxes, match_indices)
             ]
         )
@@ -405,7 +405,7 @@ class DETRLoss(nn.Module):
         gt_groups = torch.as_tensor([0, *gt_groups[:-1]]).cumsum_(0)
         gt_assigned = torch.cat(
             [
-                t[j - gt_groups[k]] if len(j) > 0 else torch.zeros(0, t.shape[-1], device=self.device)
+                (t[j - gt_groups[k]] if len(j) > 0 else torch.zeros(((0,) + t.shape[1:]), device=t.device))
                 for t, (_, j), k in zip(gt_bboxes, match_indices, range(len(gt_bboxes)))
             ]
         )
