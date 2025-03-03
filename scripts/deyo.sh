@@ -8,7 +8,9 @@ python -m torch.distributed.launch --nproc_per_node 2 --master_port 9999 segment
     --cfg models/segment/gelan-c-seg-detr.yaml \
     --weights 'weights/gelan-c-seg.pt' \
     --name "train_seg" \
-    --hyp data/hyps/hyp.scratch-high.yaml \
+    --hyp data/hyps/deyo.yaml \
     --epochs 3 \
-    --close-mosaic 15 \
+    --close-mosaic 10 \
+    --freeze 22 \
+    --no-overlap \
     --optimizer AdamW

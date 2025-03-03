@@ -65,7 +65,7 @@ class HungarianMatcher(nn.Module):
         _cost_mask(bs, num_gts, masks=None, gt_mask=None): Computes the mask cost and dice cost if masks are predicted.
     """
 
-    def __init__(self, cost_gain=None, use_fl=True, with_mask=False, num_sample_points=12544, alpha=0.25, gamma=2.0):
+    def __init__(self, cost_gain=None, use_fl=True, with_mask=True, num_sample_points=12544, alpha=0.25, gamma=2.0):
         """Initializes HungarianMatcher with cost coefficients, Focal Loss, mask prediction, sample points, and alpha
         gamma factors.
         """
@@ -152,6 +152,43 @@ class HungarianMatcher(nn.Module):
             (torch.tensor(i, dtype=torch.long), torch.tensor(j, dtype=torch.long) + gt_groups[k])
             for k, (i, j) in enumerate(indices)
         ]
+    
+    # This function is for future RT-DETR Segment models
+    def _cost_mask(self, bs, num_gts, masks=None, gt_mask=None):
+        assert masks is not None and gt_mask is not None, 'Make sure the input has `mask` and `gt_mask`'
+        # all masks share the same set of points for efficient matching
+        sample_points = torch.rand([bs, 1, self.num_sample_points, 2])
+        sample_points = 2.0 * sample_points - 1.0
+        
+        sample_points = sample_points.to(masks.device)
+        out_mask = F.grid_sample(masks.detach(), sample_points, align_corners=False).squeeze(-2)
+        out_mask = out_mask.flatten(0, 1)
+
+        tgt_mask = torch.cat(gt_mask).unsqueeze(1)
+        sample_points = torch.cat([a.repeat(b, 1, 1, 1) for a, b in zip(sample_points, num_gts) if b > 0])
+        sample_points = sample_points.to(tgt_mask.device)
+        tgt_mask = tgt_mask.float()
+        tgt_mask = F.grid_sample(tgt_mask, sample_points, align_corners=False).squeeze([1, 2])
+    
+        with torch.amp.autocast("cuda", enabled=False):
+            # binary cross entropy cost
+            pos_cost_mask = F.binary_cross_entropy_with_logits(out_mask, torch.ones_like(out_mask), reduction='none')
+            neg_cost_mask = F.binary_cross_entropy_with_logits(out_mask, torch.zeros_like(out_mask), reduction='none')
+            neg_cost_mask = neg_cost_mask.to(tgt_mask.device)
+            pos_cost_mask = pos_cost_mask.to(tgt_mask.device)
+            cost_mask = torch.matmul(pos_cost_mask, tgt_mask.T) + torch.matmul(neg_cost_mask, 1 - tgt_mask.T)
+            cost_mask /= self.num_sample_points
+    
+            # dice cost
+            out_mask = F.sigmoid(out_mask)
+            dv = out_mask.device
+            out_mask = out_mask.to(tgt_mask.device)
+            numerator = 2 * torch.matmul(out_mask, tgt_mask.T)
+            denominator = out_mask.sum(-1, keepdim=True) + tgt_mask.sum(-1).unsqueeze(0)
+            cost_dice = 1 - (numerator + 1) / (denominator + 1)
+    
+            C = self.cost_gain['mask'] * cost_mask + self.cost_gain['dice'] * cost_dice
+        return C.to(dv)
         
 
 class VarifocalLoss(nn.Module):
@@ -247,7 +284,7 @@ class DETRLoss(nn.Module):
         if loss_gain is None:
             loss_gain = {"class": 1, "bbox": 5, "giou": 2, "no_object": 0.1, "mask": 1, "dice": 1}
         self.nc = nc
-        self.matcher = HungarianMatcher(cost_gain={"class": 2, "bbox": 5, "giou": 2, "mask": 1, "dice": 1})
+        self.matcher = HungarianMatcher(cost_gain={"class": 2, "bbox": 5, "giou": 2, "mask": 0.1, "dice": 1})
         self.loss_gain = loss_gain
         self.aux_loss = aux_loss
         self.fl = FocalLoss(nn.BCEWithLogitsLoss()) if use_fl else None
@@ -315,8 +352,8 @@ class DETRLoss(nn.Module):
         src_masks, target_masks = self._get_assigned_bboxes(masks, gt_mask, match_indices, gt_groups)
         src_masks = F.interpolate(src_masks.unsqueeze(0), size=target_masks.shape[-2:], mode='bilinear')[0]
         # TODO: torch does not have `sigmoid_focal_loss`, but it's not urgent since we don't use mask branch for now.
-        loss[name_mask] = self.loss_gain['mask'] * sigmoid_focal_loss(src_masks, target_masks, num_gts)
-        loss[name_dice] = self.loss_gain['dice'] * self._dice_loss(src_masks, target_masks, num_gts)
+        loss[name_mask] = self.loss_gain['mask'] * sigmoid_focal_loss(src_masks, target_masks, num_gts) / len(target_masks)
+        loss[name_dice] = self.loss_gain['dice'] * self._dice_loss(src_masks, target_masks, num_gts) / len(target_masks)
         return loss
 
     # This function is for future RT-DETR Segment models
@@ -371,10 +408,14 @@ class DETRLoss(nn.Module):
             loss[0] += loss_[f"loss_class{postfix}"]
             loss[1] += loss_[f"loss_bbox{postfix}"]
             loss[2] += loss_[f"loss_giou{postfix}"]
-            if masks is not None and gt_mask is not None:
-                loss_ = self._get_loss_mask(aux_masks, gt_mask, match_indices, gt_groups, postfix)
-                loss[3] += loss_[f'loss_mask{postfix}']
-                loss[4] += loss_[f'loss_dice{postfix}']
+            loss[3] += loss_[f'loss_mask{postfix}']
+            loss[4] += loss_[f'loss_dice{postfix}']
+            # if masks is not None and gt_mask is not None:
+            #     loss_ = self._get_loss_mask(aux_masks, gt_mask, match_indices, gt_groups, postfix)
+            #     loss[3] += loss_[f'loss_mask{postfix}']
+            #     loss[4] += loss_[f'loss_dice{postfix}']
+                # print(f"\nloss[3] = {loss[3]}\n")
+                # print(f"loss[0] = {loss[0]}\n")
 
         loss = {
             f"loss_class_aux{postfix}": loss[0],
