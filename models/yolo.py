@@ -1088,7 +1088,9 @@ class RTDETRSegment(Detect):
             dec_seg_masks_resized = dec_seg_masks_resized.unsqueeze(0)  # (1, batch_size, num_queries, H, W)
 
         # Giảm chiều mặt nạ phân đoạn thành 1 giá trị cho mỗi truy vấn (dùng trong y)
-        seg_masks_flat = dec_seg_masks_resized.mean(dim=[-2, -1], keepdim=True)
+        seg_masks_flat = dec_seg_masks_resized.squeeze(0) 
+        # H, W => m = H * W
+        seg_masks_flat = seg_masks_flat.view(seg_masks_flat.shape[0], seg_masks_flat.shape[1], -1) 
 
         # # Trong chế độ huấn luyện, sequence_output là stack của tất cả các tầng
         # # Lấy tầng cuối cùng cho phân đoạn
@@ -1116,7 +1118,7 @@ class RTDETRSegment(Detect):
         y = torch.cat((
             dec_bboxes.squeeze(0),              # (batch_size, num_queries, 4)
             dec_scores.squeeze(0).sigmoid(),    # (batch_size, num_queries, nc)
-            seg_masks_flat.squeeze(0)           # (batch_size, num_queries, 1)
+            seg_masks_flat                       # (batch_size, num_queries, m)
         ), dim=-1)
         y[..., :4] = y[..., :4] * torch.tensor(imgsz, device=y.device)[[1, 0, 1, 0]]
         return y if self.export else (y, x_out)

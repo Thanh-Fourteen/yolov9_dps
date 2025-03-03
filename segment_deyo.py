@@ -22,7 +22,7 @@ if str(ROOT) not in sys.path:
     sys.path.append(str(ROOT))  # add ROOT to PATH
 ROOT = Path(os.path.relpath(ROOT, Path.cwd()))  # relative
 
-import segment.val as validate  # for end-of-epoch mAP
+# import segment.val as validate  # for end-of-epoch mAP
 from models.experimental import attempt_load
 from models.yolo import SegmentationModel
 from utils.autoanchor import check_anchors
@@ -36,13 +36,14 @@ from utils.general import (LOGGER, TQDM_BAR_FORMAT, check_amp, check_dataset, ch
 from utils.loggers import GenericLogger
 from utils.plots import plot_evolve, plot_labels
 from utils.segment.dataloaders import create_dataloader
-from utils.segment.loss_tal import ComputeLoss
 from utils.segment.metrics import KEYS, fitness
 from utils.segment.plots import plot_images_and_masks, plot_results_with_masks
 from utils.torch_utils import (EarlyStopping, ModelEMA, de_parallel, select_device, smart_DDP, smart_optimizer,
                                smart_resume, torch_distributed_zero_first)
 
 from utils.loss_rtdetr import RTDETRSegmentLoss
+import segment.val_detr as validate_detr
+
 
 LOCAL_RANK = int(os.getenv('LOCAL_RANK', -1))  # https://pytorch.org/docs/stable/elastic/run.html
 RANK = int(os.getenv('RANK', -1))
@@ -383,7 +384,7 @@ def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictio
             ema.update_attr(model, include=['yaml', 'nc', 'hyp', 'names', 'stride', 'class_weights'])
             final_epoch = (epoch + 1 == epochs) or stopper.possible_stop
             if not noval or final_epoch:  # Calculate mAP
-                results, maps, _ = validate.run(data_dict,
+                results, maps, _ = validate_detr.run(data_dict,
                                                 batch_size=batch_size // WORLD_SIZE * 2,
                                                 imgsz=imgsz,
                                                 half=amp,
@@ -449,7 +450,7 @@ def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictio
                 strip_optimizer(f)  # strip optimizers
                 if f is best:
                     LOGGER.info(f'\nValidating {f}...')
-                    results, _, _ = validate.run(
+                    results, _, _ = validate_detr.run(
                         data_dict,
                         batch_size=batch_size // WORLD_SIZE * 2,
                         imgsz=imgsz,
@@ -684,23 +685,4 @@ if __name__ == "__main__":
     opt = parse_opt()
     main(opt)
 
-
-# if __name__ == '__main__':
-#     # Khởi tạo mô hình
-#     from models.yolo import RTDETRSegment
-#     model = RTDETRSegment(nc=80, ch=(512, 1024, 2048), hd=64, nq=100, nh=8, ndl=6)
-
-#     # Đầu vào giả lập
-#     x = [torch.randn(1, 512, 32, 32), torch.randn(1, 1024, 16, 16), torch.randn(1, 2048, 8, 8)]
-#     imgsz = (640, 640)
-
-#     # Chạy forward
-#     output = model(x, imgsz=imgsz)
-
-#     # Trong chế độ suy luận không export
-#     y, x_out = output
-#     dec_bboxes, dec_scores, enc_bboxes, enc_scores, dn_meta, seg_masks_resized = x_out
-
-#     print("Bounding boxes:", dec_bboxes.shape)      # (num_layers, batch_size, num_queries, 4)
-#     print("Class scores:", dec_scores.shape)        # (num_layers, batch_size, num_queries, nc)
-#     print("Segmentation masks:", seg_masks_resized.shape)  # (batch_size, num_queries, 640, 640)
+# code gọn lại phần GPU cho cùng nhau và phần float, haft trong val

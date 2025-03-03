@@ -161,6 +161,8 @@ class HungarianMatcher(nn.Module):
         sample_points = 2.0 * sample_points - 1.0
         
         sample_points = sample_points.to(masks.device)
+        if masks.dtype != sample_points.dtype:
+            sample_points = sample_points.to(masks.dtype)
         out_mask = F.grid_sample(masks.detach(), sample_points, align_corners=False).squeeze(-2)
         out_mask = out_mask.flatten(0, 1)
 
@@ -168,6 +170,8 @@ class HungarianMatcher(nn.Module):
         sample_points = torch.cat([a.repeat(b, 1, 1, 1) for a, b in zip(sample_points, num_gts) if b > 0])
         sample_points = sample_points.to(tgt_mask.device)
         tgt_mask = tgt_mask.float()
+        if tgt_mask.dtype != sample_points.dtype:
+            tgt_mask = tgt_mask.to(sample_points.dtype)
         tgt_mask = F.grid_sample(tgt_mask, sample_points, align_corners=False).squeeze([1, 2])
     
         with torch.amp.autocast("cuda", enabled=False):
@@ -341,7 +345,8 @@ class DETRLoss(nn.Module):
         # masks: [b, query, h, w], gt_mask: list[[n, H, W]]
         name_mask = f'loss_mask{postfix}'
         name_dice = f'loss_dice{postfix}'
-    
+
+        b, query, h, w = masks.shape
         loss = {}
         if sum(len(a) for a in gt_mask) == 0:
             loss[name_mask] = torch.tensor(0., device=self.device)
@@ -408,8 +413,8 @@ class DETRLoss(nn.Module):
             loss[0] += loss_[f"loss_class{postfix}"]
             loss[1] += loss_[f"loss_bbox{postfix}"]
             loss[2] += loss_[f"loss_giou{postfix}"]
-            loss[3] += loss_[f'loss_mask{postfix}']
-            loss[4] += loss_[f'loss_dice{postfix}']
+            loss[3] += loss_[f'loss_mask{postfix}'] 
+            loss[4] += loss_[f'loss_dice{postfix}'] 
             # if masks is not None and gt_mask is not None:
             #     loss_ = self._get_loss_mask(aux_masks, gt_mask, match_indices, gt_groups, postfix)
             #     loss[3] += loss_[f'loss_mask{postfix}']
