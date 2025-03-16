@@ -65,7 +65,7 @@ class HungarianMatcher(nn.Module):
         _cost_mask(bs, num_gts, masks=None, gt_mask=None): Computes the mask cost and dice cost if masks are predicted.
     """
 
-    def __init__(self, cost_gain=None, use_fl=True, with_mask=True, num_sample_points=12544, alpha=0.25, gamma=2.0):
+    def __init__(self, cost_gain=None, use_fl=True, with_mask=True, num_sample_points=5000, alpha=0.25, gamma=2.0):
         """Initializes HungarianMatcher with cost coefficients, Focal Loss, mask prediction, sample points, and alpha
         gamma factors.
         """
