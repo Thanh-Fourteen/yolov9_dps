@@ -1,5 +1,5 @@
-train: /home/tiennv/FPT/yolov9_dps/datasets/mini_seg_coco/images/train
-val: /home/tiennv/FPT/yolov9_dps/datasets/mini_seg_coco/images/val
+train: /kaggle/input/mini-seg-coco-zip/mini_seg_coco/images/train
+val: /kaggle/input/mini-seg-coco-zip/mini_seg_coco/images/val
 
 # Classes
 names:
