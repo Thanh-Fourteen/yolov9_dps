@@ -66,6 +66,7 @@ def ap_per_class_box_and_mask(tp_b, tp_m, conf, pred_cls, target_cls, plot=False
 
     # Tính AP cho mặt nạ
     results_masks = ap_per_class(tp_m, conf, pred_cls, target_cls, plot=plot, save_dir=save_dir, names=names, prefix="Mask")
+    print(f"True positives for masks: {tp_m.sum()}")
     tp_m, fp_m, p_m, r_m, f1_m, ap_m, ap_class_m = results_masks
 
     results = {
@@ -123,6 +124,10 @@ def process_batch(detections, labels, iouv, pred_masks=None, gt_masks=None, over
             index = torch.arange(nl, device=gt_masks.device).view(nl, 1, 1) + 1
             gt_masks = gt_masks.repeat(nl, 1, 1)  # shape(1,640,640) -> (n,640,640)
             gt_masks = torch.where(gt_masks == index, 1.0, 0.0)
+        
+        print(f"GT masks shape: {gt_masks.shape}, Pred masks shape: {pred_masks.shape}")
+        print(f"GT masks unique values: {torch.unique(gt_masks)}")
+
         if gt_masks.shape[1:] != pred_masks.shape[1:]:
             gt_masks = F.interpolate(gt_masks[None], pred_masks.shape[1:], mode="bilinear", align_corners=False)[0]
             gt_masks = gt_masks.gt_(0.5)
@@ -131,6 +136,8 @@ def process_batch(detections, labels, iouv, pred_masks=None, gt_masks=None, over
         if gt.dtype != pm.dtype:
             pm = pm.to(gt.dtype)
         iou = mask_iou(gt, pm)
+
+        print(f"Mask IoU: {iou}")
     else:  # boxes
         iou = box_iou(labels[:, 1:], detections[:, :4])
 
@@ -254,6 +261,7 @@ def run(
     callbacks.run('on_val_start')
     pbar = tqdm(dataloader, desc=s, bar_format=TQDM_BAR_FORMAT)
     for batch_i, (im, targets, paths, shapes, masks) in enumerate(pbar):
+        print(f"Batch {batch_i} - masks: {len(masks)}, mask shape: {masks[0].shape if masks else None}")
         callbacks.run('on_val_batch_start')
         with dt[0]:
             if cuda:
@@ -286,6 +294,7 @@ def run(
 
         with dt[1]:
             preds = model(im, batch=_targets, detr=True)
+            print(f"Predicted masks shape: {dec_masks.shape}")
 
             if compute_loss:
                 dec_bboxes, dec_scores, dec_masks, enc_bboxes, enc_scores, enc_masks, dn_meta = preds[1]
@@ -350,6 +359,9 @@ def run(
 
             # Đánh giá phát hiện đối tượng và phân đoạn
             if nl:
+                print(f"Sample {si}: {nl} labels, {npr} predictions")
+                print(f"GT mask shape: {gt_mask.shape}, Pred mask shape: {topk_pred_masks.shape}")
+                print(f"Correct masks: {correct_masks.sum()}")
                 tbox = xywh2xyxy(labels[:, 1:5]) * torch.tensor(im[si].shape[1:], device=device)[[1, 0, 1, 0]]
                 scale_boxes(im[si].shape[1:], tbox, shape, shapes[si][1])
                 labelsn = torch.cat((labels[:, 0:1], tbox), 1)
@@ -362,6 +374,7 @@ def run(
                 if gt_mask.numel() > 0:
                     pred_masks = dec_masks[-1, si]  # Tầng cuối của dec_masks
                     topk_pred_masks = pred_masks[topk_boxes[si]]
+                    print(f"Top-k predicted masks shape: {topk_pred_masks.shape}")
                     correct_masks = process_batch(predn, labelsn, iouv, topk_pred_masks, gt_mask, masks=True)
                 if plots:
                     confusion_matrix.process_batch(predn, labelsn)
@@ -386,6 +399,7 @@ def run(
 
     # Tính toán chỉ số
     stats = [torch.cat(x, 0).cpu().numpy() for x in zip(*stats)]
+    print(f"Stats length: {len(stats)}, Correct masks sum: {stats[1].sum()}")
     metrics = Metrics()
     if len(stats) and stats[0].any():
         results = ap_per_class_box_and_mask(*stats, plot=plots, save_dir=save_dir, names=names)
