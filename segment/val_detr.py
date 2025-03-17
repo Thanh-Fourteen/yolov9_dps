@@ -25,10 +25,38 @@ from utils.general import (LOGGER, NUM_THREADS, TQDM_BAR_FORMAT, Profile, check_
 from utils.metrics import ConfusionMatrix, box_iou
 from utils.plots import output_to_target, plot_val_study
 from utils.segment.dataloaders import create_dataloader
-from utils.segment.general import mask_iou
+# from utils.segment.general import mask_iou
 from utils.segment.metrics import Metrics, ap_per_class
 from utils.segment.plots import plot_images_and_masks
 from utils.torch_utils import select_device, smart_inference_mode
+
+def mask_iou(mask1, mask2, eps=1e-7):
+    """
+    Calculate IoU between two sets of binary masks.
+
+    Args:
+        mask1: [N, n] - Predicted masks, N is number of predicted objects, n is flattened size (w * h)
+        mask2: [M, n] - Ground truth masks, M is number of gt objects, n is flattened size (w * h)
+        eps: Small value to avoid division by zero
+
+    Returns:
+        iou: [N, M] - IoU scores between each pair of predicted and gt masks
+    """
+    # Đảm bảo mask1 và mask2 là nhị phân (nếu cần)
+    mask1 = mask1.float()  # Chuyển sang float nếu chưa
+    mask2 = mask2.float()
+
+    # Tính intersection
+    intersection = torch.matmul(mask1, mask2.t()).clamp(min=0)
+
+    # Tính union
+    area1 = mask1.sum(dim=1, keepdim=True)  # [N, 1]
+    area2 = mask2.sum(dim=1, keepdim=False)  # [M]
+    union = area1 + area2[None, :] - intersection  # [N, M]
+
+    # Tính IoU
+    iou = intersection / (union + eps)
+    return iou.clamp(min=0, max=1)  # Giới hạn IoU trong [0, 1]
 
 def ap_per_class_box_and_mask(tp_b, tp_m, conf, pred_cls, target_cls, plot=False, save_dir='.', names=()):
     """Tính toán chỉ số AP cho hộp giới hạn và mặt nạ."""
@@ -125,16 +153,23 @@ def process_batch(detections, labels, iouv, pred_masks=None, gt_masks=None, over
             gt_masks = gt_masks.repeat(nl, 1, 1)  # shape(1,640,640) -> (n,640,640)
             gt_masks = torch.where(gt_masks == index, 1.0, 0.0)
         
-        print(f"GT masks shape: {gt_masks.shape}, Pred masks shape: {pred_masks.shape}")
-        print(f"GT masks unique values: {torch.unique(gt_masks)}")
-
+        # Nội suy pred_masks lên kích thước của gt_masks
         if gt_masks.shape[1:] != pred_masks.shape[1:]:
-            gt_masks = F.interpolate(gt_masks[None], pred_masks.shape[1:], mode="bilinear", align_corners=False)[0]
-            gt_masks = gt_masks.gt_(0.5)
+            pred_masks = F.interpolate(pred_masks[None], gt_masks.shape[1:], mode="bilinear", align_corners=False)[0]
+        # if gt_masks.shape[1:] != pred_masks.shape[1:]:
+        #     pred_masks = F.interpolate(pred_masks[None], gt_masks.shape[1:], mode="bilinear", align_corners=False)[0]
+        
+        # Ngưỡng hóa
+        pred_masks = (pred_masks > 0.5).float()
+        gt_masks = gt_masks.gt_(0.5)
+        
+        # Debug
+        print(f"GT masks shape: {gt_masks.shape}, Pred masks shape: {pred_masks.shape}")
+        print(f"GT unique: {torch.unique(gt_masks)}, Pred unique: {torch.unique(pred_masks)}")
+        
+        # Tính IoU
         gt = gt_masks.view(gt_masks.shape[0], -1)
         pm = pred_masks.view(pred_masks.shape[0], -1)
-        if gt.dtype != pm.dtype:
-            pm = pm.to(gt.dtype)
         iou = mask_iou(gt, pm)
 
         print(f"Mask IoU: {iou}")
