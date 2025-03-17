@@ -71,7 +71,7 @@ class HungarianMatcher(nn.Module):
         """
         super().__init__()
         if cost_gain is None:
-            cost_gain = {"class": 1, "bbox": 5, "giou": 2, "mask": 1, "dice": 1}
+            cost_gain = {"class": 1, "bbox": 5, "giou": 2, "mask": 5, "dice": 5}
         self.cost_gain = cost_gain
         self.use_fl = use_fl
         self.with_mask = with_mask
@@ -193,6 +193,39 @@ class HungarianMatcher(nn.Module):
     
             C = self.cost_gain['mask'] * cost_mask + self.cost_gain['dice'] * cost_dice
         return C.to(dv)
+    # def _cost_mask(self, bs, num_gts, masks=None, gt_mask=None):
+    #     assert masks is not None and gt_mask is not None, 'Make sure the input has `mask` and `gt_mask`'
+    #     device = masks.device  # Lấy device từ masks (cuda:1)
+
+    #     # Tạo sample_points trên cùng device với masks
+    #     sample_points = torch.rand([bs, 1, self.num_sample_points, 2], device=device) * 2.0 - 1.0
+    #     if masks.dtype != sample_points.dtype:
+    #         sample_points = sample_points.to(dtype=masks.dtype)
+    #     out_mask = F.grid_sample(masks.detach(), sample_points, align_corners=False).squeeze(-2)
+    #     out_mask = out_mask.flatten(0, 1)
+
+    #     # Chuyển gt_mask sang cùng device ngay từ đầu
+    #     tgt_mask = torch.cat([m.to(device) for m in gt_mask]).unsqueeze(1).float()
+    #     sample_points_gt = torch.cat([a.repeat(b, 1, 1, 1) for a, b in zip(sample_points, num_gts) if b > 0])
+    #     if tgt_mask.dtype != sample_points_gt.dtype:
+    #         sample_points_gt = sample_points_gt.to(dtype=tgt_mask.dtype)
+    #     tgt_mask = F.grid_sample(tgt_mask, sample_points_gt, align_corners=False).squeeze([1, 2])
+
+    #     # Tắt mixed precision và tính toán loss
+    #     with torch.amp.autocast("cuda", enabled=False):
+    #         pos_cost_mask = F.binary_cross_entropy_with_logits(out_mask, torch.ones_like(out_mask), reduction='none')
+    #         neg_cost_mask = F.binary_cross_entropy_with_logits(out_mask, torch.zeros_like(out_mask), reduction='none')
+    #         # Không cần .to(tgt_mask.device) vì tất cả đã ở trên cùng device
+    #         cost_mask = torch.matmul(pos_cost_mask, tgt_mask.T) + torch.matmul(neg_cost_mask, (1 - tgt_mask.T))
+    #         cost_mask /= self.num_sample_points
+
+    #         out_mask = F.sigmoid(out_mask)
+    #         numerator = 2 * torch.matmul(out_mask, tgt_mask.T)
+    #         denominator = out_mask.sum(-1, keepdim=True) + tgt_mask.sum(-1).unsqueeze(0) + 1e-6  # Thêm epsilon
+    #         cost_dice = 1 - (numerator + 1) / denominator
+
+    #         C = self.cost_gain['mask'] * cost_mask + self.cost_gain['dice'] * cost_dice
+    #     return C  # Không cần .to(dv) vì đã ở đúng device
         
 
 class VarifocalLoss(nn.Module):
@@ -286,9 +319,9 @@ class DETRLoss(nn.Module):
         super().__init__()
 
         if loss_gain is None:
-            loss_gain = {"class": 1, "bbox": 5, "giou": 2, "no_object": 0.1, "mask": 1, "dice": 1}
+            loss_gain = {"class": 1, "bbox": 5, "giou": 2, "no_object": 0.1, "mask": 5, "dice": 5}
         self.nc = nc
-        self.matcher = HungarianMatcher(cost_gain={"class": 2, "bbox": 5, "giou": 2, "mask": 0.1, "dice": 1})
+        self.matcher = HungarianMatcher(cost_gain={"class": 2, "bbox": 5, "giou": 2, "mask": 5, "dice": 5})
         self.loss_gain = loss_gain
         self.aux_loss = aux_loss
         self.fl = FocalLoss(nn.BCEWithLogitsLoss()) if use_fl else None

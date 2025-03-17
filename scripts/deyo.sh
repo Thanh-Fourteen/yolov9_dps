@@ -2,14 +2,14 @@ python -m torch.distributed.launch --nproc_per_node 2 --master_port 9999 segment
     --sync-bn \
     --workers 4 \
     --device 0,1 \
-    --batch 16 \
+    --batch 90 \
     --data data/coco.yaml \
-    --img 320 \
+    --img 160 \
     --cfg models/segment/gelan-c-seg-detr.yaml \
     --weights 'weights/gelan-c-seg.pt' \
     --name "train_seg" \
     --hyp data/hyps/deyo.yaml \
-    --epochs 3 \
+    --epochs 10 \
     --close-mosaic 10 \
     --freeze 22 \
     --no-overlap \
