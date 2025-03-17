@@ -178,17 +178,21 @@ class HungarianMatcher(nn.Module):
             # binary cross entropy cost
             pos_cost_mask = F.binary_cross_entropy_with_logits(out_mask, torch.ones_like(out_mask), reduction='none')
             neg_cost_mask = F.binary_cross_entropy_with_logits(out_mask, torch.zeros_like(out_mask), reduction='none')
+            neg_cost_mask = neg_cost_mask.to(tgt_mask.device)
+            pos_cost_mask = pos_cost_mask.to(tgt_mask.device)
             cost_mask = torch.matmul(pos_cost_mask, tgt_mask.T) + torch.matmul(neg_cost_mask, 1 - tgt_mask.T)
             cost_mask /= self.num_sample_points
     
             # dice cost
             out_mask = F.sigmoid(out_mask)
+            dv = out_mask.device
+            out_mask = out_mask.to(tgt_mask.device)
             numerator = 2 * torch.matmul(out_mask, tgt_mask.T)
             denominator = out_mask.sum(-1, keepdim=True) + tgt_mask.sum(-1).unsqueeze(0)
             cost_dice = 1 - (numerator + 1) / (denominator + 1)
     
             C = self.cost_gain['mask'] * cost_mask + self.cost_gain['dice'] * cost_dice
-        return C
+        return C.to(dv)
 
     # def _cost_mask(self, bs, num_gts, masks=None, gt_mask=None):
     #     assert masks is not None and gt_mask is not None, 'Make sure the input has `mask` and `gt_mask`'
