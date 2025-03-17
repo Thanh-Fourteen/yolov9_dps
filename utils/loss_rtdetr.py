@@ -169,6 +169,8 @@ class HungarianMatcher(nn.Module):
         # tgt_mask = torch.cat(gt_mask).unsqueeze(1)
         tgt_mask = gt_mask.unsqueeze(1)
         sample_points = torch.cat([a.repeat(b, 1, 1, 1) for a, b in zip(sample_points, num_gts) if b > 0])
+        if tgt_mask.dtype != sample_points.dtype:
+            tgt_mask = tgt_mask.to(sample_points.dtype)
         tgt_mask = F.grid_sample(tgt_mask, sample_points, align_corners=False).squeeze([1, 2])
     
         with torch.amp.autocast("cuda", enabled=False):
