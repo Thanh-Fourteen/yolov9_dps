@@ -159,7 +159,10 @@ class HungarianMatcher(nn.Module):
         # all masks share the same set of points for efficient matching
         sample_points = torch.rand([bs, 1, self.num_sample_points, 2])
         sample_points = 2.0 * sample_points - 1.0
-    
+
+        sample_points = sample_points.to(masks.device)
+        if masks.dtype != sample_points.dtype:
+            sample_points = sample_points.to(masks.dtype)
         out_mask = F.grid_sample(masks.detach(), sample_points, align_corners=False).squeeze(-2)
         out_mask = out_mask.flatten(0, 1)
     
