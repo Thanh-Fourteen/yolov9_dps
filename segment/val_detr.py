@@ -261,7 +261,7 @@ def run(
     callbacks.run('on_val_start')
     pbar = tqdm(dataloader, desc=s, bar_format=TQDM_BAR_FORMAT)
     for batch_i, (im, targets, paths, shapes, masks) in enumerate(pbar):
-        print(f"Batch {batch_i} - masks type: {type(masks)}, masks: {masks}")
+        print(f"\nBatch {batch_i} - masks type: {type(masks)}")
         print(f"Batch {batch_i} - masks length: {len(masks) if not torch.is_tensor(masks) else masks.numel()}, "
             f"mask shape: {masks[0].shape if len(masks) > 0 else None}")
         callbacks.run('on_val_batch_start')
@@ -296,10 +296,10 @@ def run(
 
         with dt[1]:
             preds = model(im, batch=_targets, detr=True)
-            print(f"Predicted masks shape: {dec_masks.shape}")
 
             if compute_loss:
                 dec_bboxes, dec_scores, dec_masks, enc_bboxes, enc_scores, enc_masks, dn_meta = preds[1]
+                print(f"Predicted masks shape: {dec_masks.shape}")
                 if dn_meta is None:
                     dn_bboxes, dn_scores, dn_masks = None, None, None
                 else:
