@@ -305,29 +305,29 @@ def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictio
             with torch.cuda.amp.autocast(amp):
                 if detr:
                     bs = len(imgs)
-                    unique_masks = []
+                    # unique_masks = []
                     batch_idx = targets[:, 0]
                     gt_groups = [(batch_idx == i).sum().item() for i in range(bs)]
 
-                    for i in range(bs):
-                        unique_val = gt_groups[i] 
-                        if unique_val > 0: 
-                            mask_slices = torch.stack([(masks[i] == val) for val in range(1, unique_val + 1)]).float()
-                        else:
-                            mask_slices = torch.empty(0)
-                        unique_masks.append(mask_slices)
+                    # for i in range(bs):
+                    #     unique_val = gt_groups[i] 
+                    #     if unique_val > 0: 
+                    #         mask_slices = torch.stack([(masks[i] == val) for val in range(1, unique_val + 1)]).float()
+                    #     else:
+                    #         mask_slices = torch.empty(0)
+                    #     unique_masks.append(mask_slices)
                     
-                    bb = targets[:,2:].to(device)
-                    print(f"\nbb shape: {bb.shape}")
-                    print(f"\nmasks shape: {masks.shape}")
-                    exit()
+                    # bb = targets[:,2:].to(device)
+                    # print(f"\nbb shape: {bb.shape}")
+                    # print(f"\nmasks shape: {masks.shape}")
+                    # exit()
                    
                     _targets = {
                         "cls": targets[:,1].to(device, dtype=torch.long),
                         "bboxes": targets[:,2:].to(device),
                         "batch_idx": batch_idx.to(device, dtype=torch.long).view(-1),
                         "gt_groups": gt_groups,
-                        "mask": unique_masks,
+                        "mask": masks,
                     }
                 # continue
                 pred = model(imgs, batch=_targets, detr=detr) 
