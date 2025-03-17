@@ -278,8 +278,6 @@ def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictio
             pbar = tqdm(pbar, total=nb, bar_format=TQDM_BAR_FORMAT)  # progress bar
         optimizer.zero_grad()
         for i, (imgs, targets, paths, _, masks) in pbar:  # batch ------------------------------------------------------
-            print(f"\nmask shape {masks.shape}\n")
-            exit()
             # callbacks.run('on_train_batch_start')
             ni = i + nb * epoch  # number integrated batches (since train start)
             imgs = imgs.to(device, non_blocking=True).float() / 255  # uint8 to float32, 0-255 to 0.0-1.0
@@ -318,6 +316,11 @@ def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictio
                         else:
                             mask_slices = torch.empty(0)
                         unique_masks.append(mask_slices)
+                    
+                    bb = targets[:,2:].to(device)
+                    print(f"\nbb shape: {bb.shape}")
+                    print(f"\nmasks shape: {masks.shape}")
+                    exit()
                    
                     _targets = {
                         "cls": targets[:,1].to(device, dtype=torch.long),
