@@ -361,9 +361,6 @@ def run(
 
             # Đánh giá phát hiện đối tượng và phân đoạn
             if nl:
-                print(f"Sample {si}: {nl} labels, {npr} predictions")
-                print(f"GT mask shape: {gt_mask.shape}, Pred mask shape: {topk_pred_masks.shape}")
-                print(f"Correct masks: {correct_masks.sum()}")
                 tbox = xywh2xyxy(labels[:, 1:5]) * torch.tensor(im[si].shape[1:], device=device)[[1, 0, 1, 0]]
                 scale_boxes(im[si].shape[1:], tbox, shape, shapes[si][1])
                 labelsn = torch.cat((labels[:, 0:1], tbox), 1)
@@ -378,6 +375,9 @@ def run(
                     topk_pred_masks = pred_masks[topk_boxes[si]]
                     print(f"Top-k predicted masks shape: {topk_pred_masks.shape}")
                     correct_masks = process_batch(predn, labelsn, iouv, topk_pred_masks, gt_mask, masks=True)
+                    print(f"Sample {si}: {nl} labels, {npr} predictions")
+                    print(f"GT mask shape: {gt_mask.shape}, Pred mask shape: {topk_pred_masks.shape}")
+                    print(f"Correct masks: {correct_masks.sum()}")
                 if plots:
                     confusion_matrix.process_batch(predn, labelsn)
             
