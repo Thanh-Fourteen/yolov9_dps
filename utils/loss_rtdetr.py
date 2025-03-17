@@ -428,7 +428,8 @@ class DETRLoss(nn.Module):
             return loss
     
         num_gts = len(gt_mask)
-        src_masks, target_masks = self._get_assigned_bboxes(masks, gt_mask, match_indices, gt_groups)
+        src_masks, target_masks = self._get_assigned_bboxes(masks, gt_mask, match_indices)
+        # src_masks, target_masks = self._get_assigned_bboxes(masks, gt_mask, match_indices, gt_groups)
         src_masks = F.interpolate(src_masks.unsqueeze(0), size=target_masks.shape[-2:], mode='bilinear')[0]
         # TODO: torch does not have `sigmoid_focal_loss`, but it's not urgent since we don't use mask branch for now.
         loss[name_mask] = self.loss_gain['mask'] * sigmoid_focal_loss(src_masks, target_masks, num_gts) / len(target_masks)
