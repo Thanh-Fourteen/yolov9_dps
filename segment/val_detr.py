@@ -296,9 +296,6 @@ def run(
     callbacks.run('on_val_start')
     pbar = tqdm(dataloader, desc=s, bar_format=TQDM_BAR_FORMAT)
     for batch_i, (im, targets, paths, shapes, masks) in enumerate(pbar):
-        print(f"\nBatch {batch_i} - masks type: {type(masks)}")
-        print(f"Batch {batch_i} - masks length: {len(masks) if not torch.is_tensor(masks) else masks.numel()}, "
-            f"mask shape: {masks[0].shape if len(masks) > 0 else None}")
         callbacks.run('on_val_batch_start')
         with dt[0]:
             if cuda:

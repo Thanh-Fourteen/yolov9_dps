@@ -203,6 +203,7 @@ def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictio
                                        cache=None if noval else opt.cache,
                                        rect=True,
                                        rank=-1,
+                                       quad=opt.quad,
                                        workers=workers * 2,
                                        pad=0.5,
                                        mask_downsample_ratio=mask_ratio,
