@@ -230,12 +230,14 @@ def run(
                 scores = pred_scores  # (bs, nq, nc)
                 num_preds = nq
                 k = min(max_det, num_preds)
-                topk_values, topk_indexes = torch.topk(scores.max(dim=2).values, k, dim=1)  # Lấy max score cho mỗi query
-                topk_boxes = topk_indexes.unsqueeze(-1).repeat(1, 1, 4)
-                topk_classes = torch.gather(scores.argmax(dim=2), 1, topk_indexes)
-                bboxes = torch.gather(bboxes, 1, topk_boxes)
-                scores = topk_values
-                pred_masks = torch.gather(pred_masks, 1, topk_indexes.unsqueeze(-1).repeat(1, 1, pred_masks.shape[-1])) if pred_masks is not None else None
+                topk_values, topk_indexes = torch.topk(scores.max(dim=2).values, k, dim=1)  # (bs, k)
+                topk_classes = torch.gather(scores.argmax(dim=2), 1, topk_indexes)  # (bs, k)
+                topk_boxes = topk_indexes.unsqueeze(-1).repeat(1, 1, 4)  # (bs, k, 4)
+                bboxes = torch.gather(bboxes, 1, topk_boxes)  # (bs, k, 4)
+                scores = topk_values  # (bs, k)
+                if pred_masks is not None:
+                    topk_mask_indexes = topk_indexes.unsqueeze(-1).unsqueeze(-1).repeat(1, 1, pred_masks.shape[2], pred_masks.shape[3])  # (bs, k, h, w)
+                    pred_masks = torch.gather(pred_masks, 1, topk_mask_indexes)  # (bs, k, h, w)
                 preds = [torch.cat([xywh2xyxy(bbox), score[..., None], cls[..., None]], dim=-1) 
                          for bbox, score, cls in zip(bboxes, scores, topk_classes)]
             else:
