@@ -313,8 +313,15 @@ def run(
         batch_idx = targets[:, 0]
         gt_groups = [(batch_idx == i).sum().item() for i in range(bs)]
 
+        bb = targets[:,2:].to(device)
+        cls =  targets[:,1].to(device, dtype=torch.long)
+        print(f"\ncls shape: {cls.shape}")
+        print(f"\nbb shape: {bb.shape}")
+        print(f"\nmasks shape: {masks.shape}")
+        print(f"\ngt_groups shape: {len(gt_groups)}")
+
         _targets = {
-            "cls": targets[:, 1].to(device, dtype=torch.long),
+            "cls": targets[:,1].to(device, dtype=torch.long),
             "bboxes": targets[:, 2:].to(device),
             "batch_idx": batch_idx.to(device, dtype=torch.long).view(-1),
             "gt_groups": gt_groups,
