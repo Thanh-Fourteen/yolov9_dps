@@ -125,13 +125,15 @@ def process_batch(detections, labels, iouv, pred_masks=None, gt_masks=None, over
 
     # Tính IoU cho mask nếu có
     if masks and pred_masks is not None and gt_masks is not None:
+        LOGGER.info(f"pred_masks shape: {pred_masks.shape}, gt_masks shape: {gt_masks.shape}")
+        LOGGER.info(f"detections shape: {detections.shape}, labels shape: {labels.shape}")
         # Đảm bảo số lượng mask khớp với detections và labels
         n_pred = detections.shape[0]
         n_gt = labels.shape[0]
-        if pred_masks.shape[0] > n_pred:
-            pred_masks = pred_masks[:n_pred]
-        if gt_masks.shape[0] > n_gt:
-            gt_masks = gt_masks[:n_gt]
+        if pred_masks.shape[0] != n_pred:
+            pred_masks = pred_masks[:n_pred] if pred_masks.shape[0] > n_pred else F.pad(pred_masks, (0, 0, 0, 0, 0, n_pred - pred_masks.shape[0]))
+        if gt_masks.shape[0] != n_gt:
+            gt_masks = gt_masks[:n_gt] if gt_masks.shape[0] > n_gt else F.pad(gt_masks, (0, 0, 0, 0, 0, n_gt - gt_masks.shape[0]))
 
         # Nội suy pred_masks để khớp với kích thước gt_masks
         if pred_masks.shape[1:] != gt_masks.shape[1:]:
@@ -141,6 +143,7 @@ def process_batch(detections, labels, iouv, pred_masks=None, gt_masks=None, over
 
         # Tính IoU mask
         iou_masks = mask_iou(pred_masks, gt_masks)
+        LOGGER.info(f"iou_masks shape: {iou_masks.shape}")
 
     # Xác định dự đoán đúng cho bbox và mask
     for i in range(len(iouv)):
@@ -304,14 +307,15 @@ def run(
         bboxes = dec_bboxes[-1]  # [bs, num_queries, 4]
         scores = dec_scores[-1]  # [bs, num_queries, num_classes]
         pred_masks = dec_masks[-1]  # [bs, num_queries, h, w]
+        LOGGER.info(f"scores shape: {scores.shape}, pred_masks shape: {pred_masks.shape}")
         outputs = [torch.zeros((0, 6), device=bboxes.device)] * bs
         num_queries = scores.shape[1]
         k = min(max_det, num_queries)  # Đảm bảo k không vượt quá num_queries
         topk_values, topk_indexes = torch.topk(scores.max(dim=-1).values, k, dim=1)
         topk_boxes = topk_indexes
-        # Kiểm tra shape trước khi gather
-        if topk_boxes.max() >= scores.shape[1]:
-            topk_boxes = torch.clamp(topk_boxes, max=scores.shape[1] - 1)
+        LOGGER.info(f"topk_boxes shape: {topk_boxes.shape}, max index: {topk_boxes.max()}")
+        if topk_boxes.max() >= num_queries:
+            topk_boxes = torch.clamp(topk_boxes, max=num_queries - 1)
         topk_labels = scores.gather(2, topk_boxes.unsqueeze(-1).repeat(1, 1, scores.shape[-1])).argmax(dim=-1)
 
         for i in range(bs):
