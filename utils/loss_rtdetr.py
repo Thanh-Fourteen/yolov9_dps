@@ -80,41 +80,15 @@ class HungarianMatcher(nn.Module):
         self.gamma = gamma
 
     def forward(self, pred_bboxes, pred_scores, gt_bboxes, gt_cls, gt_groups, masks=None, gt_mask=None):
-        """
-        Forward pass for HungarianMatcher. This function computes costs based on prediction and ground truth
-        (classification cost, L1 cost between boxes and GIoU cost between boxes) and finds the optimal matching between
-        predictions and ground truth based on these costs.
-
-        Args:
-            pred_bboxes (Tensor): Predicted bounding boxes with shape [batch_size, num_queries, 4].
-            pred_scores (Tensor): Predicted scores with shape [batch_size, num_queries, num_classes].
-            gt_cls (torch.Tensor): Ground truth classes with shape [num_gts, ].
-            gt_bboxes (torch.Tensor): Ground truth bounding boxes with shape [num_gts, 4].
-            gt_groups (List[int]): List of length equal to batch size, containing the number of ground truths for
-                each image.
-            masks (Tensor, optional): Predicted masks with shape [batch_size, num_queries, height, width].
-                Defaults to None.
-            gt_mask (List[Tensor], optional): List of ground truth masks, each with shape [num_masks, Height, Width].
-                Defaults to None.
-
-        Returns:
-            (List[Tuple[Tensor, Tensor]]): A list of size batch_size, each element is a tuple (index_i, index_j), where:
-                - index_i is the tensor of indices of the selected predictions (in order)
-                - index_j is the tensor of indices of the corresponding selected ground truth targets (in order)
-                For each batch element, it holds:
-                    len(index_i) = len(index_j) = min(num_queries, num_target_boxes)
-        """
-
         bs, nq, nc = pred_scores.shape
 
         if sum(gt_groups) == 0:
-            return [(torch.tensor([], dtype=torch.long), torch.tensor([], dtype=torch.long)) for _ in range(bs)]
+            device = pred_bboxes.device
+            return [(torch.tensor([], dtype=torch.long, device=device), torch.tensor([], dtype=torch.long, device=device)) for _ in range(bs)]
 
         # We flatten to compute the cost matrices in a batch
-        # [batch_size * num_queries, num_classes]
         pred_scores = pred_scores.detach().view(-1, nc)
         pred_scores = F.sigmoid(pred_scores) if self.use_fl else F.softmax(pred_scores, dim=-1)
-        # [batch_size * num_queries, 4]
         pred_bboxes = pred_bboxes.detach().view(-1, 4)
 
         # Compute the classification cost
@@ -147,9 +121,12 @@ class HungarianMatcher(nn.Module):
 
         C = C.view(bs, nq, -1).cpu()
         indices = [linear_sum_assignment(c[i]) for i, c in enumerate(C.split(gt_groups, -1))]
-        gt_groups = torch.as_tensor([0, *gt_groups[:-1]]).cumsum_(0)  # (idx for queries, idx for gt)
+        gt_groups = torch.as_tensor([0, *gt_groups[:-1]], device=pred_bboxes.device).cumsum_(0)
         return [
-            (torch.tensor(i, dtype=torch.long), torch.tensor(j, dtype=torch.long) + gt_groups[k])
+            (
+                torch.tensor(i, dtype=torch.long, device=pred_bboxes.device), 
+                torch.tensor(j, dtype=torch.long, device=pred_bboxes.device) + gt_groups[k]
+            )
             for k, (i, j) in enumerate(indices)
         ]
     
@@ -572,6 +549,8 @@ class DETRLoss(nn.Module):
             gt_groups_cumsum = torch.as_tensor([0, *gt_groups[:-1]], device=self.device).cumsum_(0)
             # Chuyển tất cả tensor trong gt_bboxes sang self.device
             gt_bboxes = [t.to(self.device) for t in gt_bboxes]
+            # Chuyển j sang self.device trong match_indices
+            match_indices = [(i.to(self.device), j.to(self.device)) for i, j in match_indices]
             gt_assigned = torch.cat(
                 [
                     (
@@ -579,9 +558,9 @@ class DETRLoss(nn.Module):
                         else torch.zeros((0,) + t.shape[1:], device=self.device)
                     )
                     for t, (_, j), k in zip(gt_bboxes, match_indices, range(len(gt_bboxes)))
-                    if len(t) > 0  # Bỏ qua tensor rỗng
+                    if len(t) > 0
                 ]
-            ).float()  # Chuyển sang float32 cho mask
+            ).float()
 
         return pred_assigned, gt_assigned
 
