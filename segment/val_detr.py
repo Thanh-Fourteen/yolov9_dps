@@ -226,7 +226,9 @@ def run(
 
                 bs, _, nd = pred_bboxes.shape
                 bboxes, scores = pred_bboxes.split((4, nd - 4), dim=-1)
-                topk_values, topk_indexes = torch.topk(scores.reshape(bs, -1), max_det, dim=1)
+                num_preds = scores.reshape(bs, -1).shape[1]  # Tổng số dự đoán
+                k = min(max_det, num_preds)  # Đảm bảo k không vượt quá số dự đoán thực tế
+                topk_values, topk_indexes = torch.topk(scores.reshape(bs, -1), k, dim=1)
                 topk_boxes = topk_indexes // scores.shape[2]
                 lbs = topk_indexes % scores.shape[2]
                 bboxes = torch.gather(bboxes, 1, topk_boxes.unsqueeze(-1).repeat(1, 1, 4))
@@ -241,11 +243,13 @@ def run(
                     mloss = (mloss * batch_i + loss_items) / (batch_i + 1)
 
                 bs, _, nd = pred_bboxes.shape
-                if nm is not None:  # Chỉ áp dụng nếu là YOLO Segmentation
+                if nm is not None:  # YOLO Segmentation
                     bboxes, scores_and_masks = pred_bboxes.split((4, nd - 4), dim=-1)
                     scores = scores_and_masks[:, :, :-nm]
                     mask_coeffs = scores_and_masks[:, :, -nm:]
-                    topk_values, topk_indexes = torch.topk(scores.reshape(bs, -1), max_det, dim=1)
+                    num_preds = scores.reshape(bs, -1).shape[1]  # Tổng số dự đoán
+                    k = min(max_det, num_preds)  # Đảm bảo k không vượt quá số dự đoán thực tế
+                    topk_values, topk_indexes = torch.topk(scores.reshape(bs, -1), k, dim=1)
                     topk_boxes = topk_indexes // scores.shape[2]
                     lbs = topk_indexes % scores.shape[2]
                     bboxes = torch.gather(bboxes, 1, topk_boxes.unsqueeze(-1).repeat(1, 1, 4))
@@ -255,7 +259,9 @@ def run(
                              for bbox, score, cls in zip(bboxes, scores, lbs)]
                 else:  # YOLO Detection (không có segmentation)
                     bboxes, scores = pred_bboxes.split((4, nd - 4), dim=-1)
-                    topk_values, topk_indexes = torch.topk(scores.reshape(bs, -1), max_det, dim=1)
+                    num_preds = scores.reshape(bs, -1).shape[1]  # Tổng số dự đoán
+                    k = min(max_det, num_preds)  # Đảm bảo k không vượt quá số dự đoán thực tế
+                    topk_values, topk_indexes = torch.topk(scores.reshape(bs, -1), k, dim=1)
                     topk_boxes = topk_indexes // scores.shape[2]
                     lbs = topk_indexes % scores.shape[2]
                     bboxes = torch.gather(bboxes, 1, topk_boxes.unsqueeze(-1).repeat(1, 1, 4))
