@@ -232,6 +232,12 @@ def run(
         callbacks=Callbacks(),
 ):
     
+    val_iter = iter(dataloader)
+    batch = next(val_iter)
+    imgs, targets, paths, _, masks = batch
+    print(f"mask val first shape: {masks.shape}")
+
+
     # Initialize/load model and set device
     training = model is not None
     if training:
@@ -294,6 +300,12 @@ def run(
     mloss = torch.zeros(5, device=device)
     jdict, stats = [], []
     callbacks.run('on_val_start')
+
+    val_iter = iter(dataloader)
+    batch = next(val_iter)
+    imgs, targets, paths, _, masks = batch
+    print(f"mask val second shape: {masks.shape}")
+
     pbar = tqdm(dataloader, desc=s, bar_format=TQDM_BAR_FORMAT)
     for batch_i, (im, targets, paths, shapes, masks) in enumerate(pbar):
         callbacks.run('on_val_batch_start')
