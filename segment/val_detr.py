@@ -310,23 +310,15 @@ def run(
 
         # Chuẩn bị nhãn mặt nạ
         bs = len(im)
-        unique_masks = []
         batch_idx = targets[:, 0]
         gt_groups = [(batch_idx == i).sum().item() for i in range(bs)]
-        for i in range(bs):
-            unique_val = gt_groups[i]
-            if unique_val > 0:
-                mask_slices = torch.stack([(masks[i] == val) for val in range(1, unique_val + 1)]).float()
-            else:
-                mask_slices = torch.empty(0).to(device)
-            unique_masks.append(mask_slices)
 
         _targets = {
             "cls": targets[:, 1].to(device, dtype=torch.long),
             "bboxes": targets[:, 2:].to(device),
             "batch_idx": batch_idx.to(device, dtype=torch.long).view(-1),
             "gt_groups": gt_groups,
-            "mask": unique_masks,
+            "mask": masks,
         }
 
         with dt[1]:
