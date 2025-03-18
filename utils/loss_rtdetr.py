@@ -145,22 +145,26 @@ class HungarianMatcher(nn.Module):
 
         # Xử lý các mask ground truth
         tgt_mask = torch.cat(gt_mask)  # [total_gts, H, W]
-        total_gts = tgt_mask.shape[0]
+        total_gts = sum(num_gts)  # Tổng số ground truth từ num_gts
         
-        # Tạo điểm mẫu theo batch cho ground truth
-        sample_points_gt = sample_points.expand(-1, total_gts // bs, -1, -1)  # [bs, gts_per_batch, num_sample_points, 2]
-        sample_points_gt = sample_points_gt.reshape(-1, self.num_sample_points, 2)  # [bs * gts_per_batch, num_sample_points, 2]
-        
-        # Đảm bảo kích thước batch khớp nhau
-        tgt_mask = tgt_mask.view(bs, -1, *tgt_mask.shape[1:])  # [bs, gts_per_batch, H, W]
-        tgt_mask = tgt_mask.reshape(-1, *tgt_mask.shape[2:])   # [bs * gts_per_batch, H, W]
-        tgt_mask = tgt_mask.unsqueeze(1).float()  # [bs * gts_per_batch, 1, H, W]
+        # Tạo sample points cho ground truth dựa trên num_gts
+        sample_points_gt = []
+        for i, n_gt in enumerate(num_gts):
+            if n_gt > 0:
+                # Lặp lại sample points cho mỗi ground truth trong batch
+                sp = sample_points[i:i+1].expand(n_gt, 1, self.num_sample_points, 2)  # [n_gt, 1, num_sample_points, 2]
+                sample_points_gt.append(sp)
+        sample_points_gt = torch.cat(sample_points_gt, dim=0)  # [total_gts, 1, num_sample_points, 2]
+
+        # Đảm bảo tgt_mask có định dạng đúng
+        assert tgt_mask.shape[0] == total_gts, f"Kích thước không khớp: {tgt_mask.shape[0]} != {total_gts}"
+        tgt_mask = tgt_mask.unsqueeze(1).float()  # [total_gts, 1, H, W]
 
         # Lấy mẫu các mask ground truth
-        sampled_tgt = F.grid_sample(tgt_mask, sample_points_gt, align_corners=False)  # [bs * gts_per_batch, 1, 1, num_sample_points]
-        sampled_tgt = sampled_tgt.squeeze([1, 2])  # [bs * gts_per_batch, num_sample_points]
+        sampled_tgt = F.grid_sample(tgt_mask, sample_points_gt, align_corners=False)  # [total_gts, 1, 1, num_sample_points]
+        sampled_tgt = sampled_tgt.squeeze([1, 2])  # [total_gts, num_sample_points]
 
-        # Định hình lại để tính toán chi phí
+        # Định hình lại out_mask để tính toán chi phí
         out_mask = out_mask.view(-1, self.num_sample_points)  # [bs * nq, num_sample_points]
 
         with torch.amp.autocast("cuda", enabled=False):
