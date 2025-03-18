@@ -135,22 +135,29 @@ class HungarianMatcher(nn.Module):
         assert masks is not None and gt_mask is not None, 'Make sure the input has `mask` and `gt_mask`'
         device = masks.device
 
-        # Tổng số ground truth
+        # Shape của masks: [bs, num_queries, h, w]
+        b, num_queries, h, w = masks.shape
         total_gts = sum(num_gts)
 
-        # Tạo sample_points với batch size bằng tổng số ground truth
-        sample_points = torch.rand([total_gts, 1, self.num_sample_points, 2], device=device)
-        sample_points = 2.0 * sample_points - 1.0
-        if masks.dtype != sample_points.dtype:
-            sample_points = sample_points.to(masks.dtype)
+        # Tạo sample_points cho masks với batch size bằng bs
+        sample_points_pred = torch.rand([bs, 1, self.num_sample_points, 2], device=device)
+        sample_points_pred = 2.0 * sample_points_pred - 1.0
+        if masks.dtype != sample_points_pred.dtype:
+            sample_points_pred = sample_points_pred.to(masks.dtype)
 
         # Tính mask dự đoán
-        out_mask = F.grid_sample(masks.detach(), sample_points, align_corners=False).squeeze(-2)
-        out_mask = out_mask.flatten(0, 1)
+        out_mask = F.grid_sample(masks.detach(), sample_points_pred, align_corners=False).squeeze(-2)  # [bs, num_queries, num_sample_points]
+        out_mask = out_mask.view(bs * num_queries, self.num_sample_points)  # [bs * num_queries, num_sample_points]
+
+        # Tạo sample_points cho gt_mask với batch size bằng total_gts
+        sample_points_gt = torch.rand([total_gts, 1, self.num_sample_points, 2], device=device)
+        sample_points_gt = 2.0 * sample_points_gt - 1.0
+        if masks.dtype != sample_points_gt.dtype:
+            sample_points_gt = sample_points_gt.to(masks.dtype)
 
         # Tính mask ground truth
         tgt_mask = torch.cat(gt_mask).unsqueeze(1).to(device)  # [total_gts, 1, H]
-        tgt_mask = F.grid_sample(tgt_mask, sample_points, align_corners=False).squeeze([1, 2])  # [total_gts, 12544]
+        tgt_mask = F.grid_sample(tgt_mask, sample_points_gt, align_corners=False).squeeze([1, 2])  # [total_gts, num_sample_points]
 
         with torch.amp.autocast("cuda", enabled=False):
             # Binary cross entropy cost
