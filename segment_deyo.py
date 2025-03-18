@@ -394,12 +394,6 @@ def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictio
         scheduler.step()
 
         if RANK in {-1, 0}:
-            
-            val_iter = iter(val_loader)
-            batch = next(val_iter)
-            imgs, targets, paths, _, masks = batch
-            print(f"mask val zaro shape: {masks.shape}")
-
             # mAP
             # callbacks.run('on_train_epoch_end', epoch=epoch)
             ema.update_attr(model, include=['yaml', 'nc', 'hyp', 'names', 'stride', 'class_weights'])
