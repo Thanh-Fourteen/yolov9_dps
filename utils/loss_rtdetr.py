@@ -157,6 +157,9 @@ class HungarianMatcher(nn.Module):
 
         # Tính mask ground truth
         tgt_mask = torch.cat(gt_mask).unsqueeze(1).to(device)  # [total_gts, 1, H]
+        print("masks shape:", masks.shape)
+        print("sample_points_pred shape:", sample_points_pred.shape)
+        print("out_mask shape:", out_mask.shape)
         tgt_mask = F.grid_sample(tgt_mask, sample_points_gt, align_corners=False).squeeze([1, 2])  # [total_gts, num_sample_points]
 
         with torch.amp.autocast("cuda", enabled=False):
