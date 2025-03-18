@@ -563,11 +563,16 @@ class DETRLoss(nn.Module):
                 ]
             )
         else:  # Trường hợp mask (gt_bboxes là danh sách các tensor)
-            gt_groups = torch.as_tensor([0, *gt_groups[:-1]]).cumsum_(0) if gt_groups is not None else None
+            assert gt_groups is not None, "gt_groups must be provided for mask assignment"
+            gt_groups_cumsum = torch.as_tensor([0, *gt_groups[:-1]]).cumsum_(0)
             gt_assigned = torch.cat(
                 [
-                    (t[j - gt_groups[k]] if len(j) > 0 else torch.zeros((0,) + t.shape[1:], device=t.device))
+                    (
+                        t[(j - gt_groups_cumsum[k]).clamp(max=t.shape[0] - 1)] if len(j) > 0 
+                        else torch.zeros((0,) + t.shape[1:], device=t.device)
+                    )
                     for t, (_, j), k in zip(gt_bboxes, match_indices, range(len(gt_bboxes)))
+                    if len(t) > 0  # Bỏ qua tensor rỗng
                 ]
             )
 
