@@ -125,12 +125,21 @@ def process_batch(detections, labels, iouv, pred_masks=None, gt_masks=None, over
 
     # Tính IoU cho mask nếu có
     if masks and pred_masks is not None and gt_masks is not None:
+        # Đảm bảo số lượng mask khớp với detections và labels
+        n_pred = detections.shape[0]
+        n_gt = labels.shape[0]
+        if pred_masks.shape[0] > n_pred:
+            pred_masks = pred_masks[:n_pred]
+        if gt_masks.shape[0] > n_gt:
+            gt_masks = gt_masks[:n_gt]
+
+        # Nội suy pred_masks để khớp với kích thước gt_masks
         if pred_masks.shape[1:] != gt_masks.shape[1:]:
             pred_masks = F.interpolate(pred_masks.unsqueeze(0), size=gt_masks.shape[1:], mode="bilinear", align_corners=False).squeeze(0)
         pred_masks = (pred_masks > 0.5).float()
         gt_masks = gt_masks.float()
 
-        # Tính IoU mask cho từng cặp pred và gt
+        # Tính IoU mask
         iou_masks = mask_iou(pred_masks, gt_masks)
 
     # Xác định dự đoán đúng cho bbox và mask
@@ -296,11 +305,13 @@ def run(
         scores = dec_scores[-1]  # [bs, num_queries, num_classes]
         pred_masks = dec_masks[-1]  # [bs, num_queries, h, w]
         outputs = [torch.zeros((0, 6), device=bboxes.device)] * bs
-
         num_queries = scores.shape[1]
-        k = min(max_det, num_queries)
+        k = min(max_det, num_queries)  # Đảm bảo k không vượt quá num_queries
         topk_values, topk_indexes = torch.topk(scores.max(dim=-1).values, k, dim=1)
         topk_boxes = topk_indexes
+        # Kiểm tra shape trước khi gather
+        if topk_boxes.max() >= scores.shape[1]:
+            topk_boxes = torch.clamp(topk_boxes, max=scores.shape[1] - 1)
         topk_labels = scores.gather(2, topk_boxes.unsqueeze(-1).repeat(1, 1, scores.shape[-1])).argmax(dim=-1)
 
         for i in range(bs):
