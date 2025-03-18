@@ -226,17 +226,18 @@ def run(
                     mloss = (mloss * batch_i + loss_items) / (batch_i + 1)
 
                 bs, nq, _ = pred_bboxes.shape  # batch_size, num_queries, 4
-                bboxes, scores = pred_bboxes.split((4, nq - 4), dim=-1)
-                num_preds = scores.reshape(bs, -1).shape[1]
+                bboxes = pred_bboxes  # (bs, nq, 4)
+                scores = pred_scores  # (bs, nq, nc)
+                num_preds = nq
                 k = min(max_det, num_preds)
-                topk_values, topk_indexes = torch.topk(scores.reshape(bs, -1), k, dim=1)
-                topk_boxes = topk_indexes // scores.shape[2]
-                lbs = topk_indexes % scores.shape[2]
-                bboxes = torch.gather(bboxes, 1, topk_boxes.unsqueeze(-1).repeat(1, 1, 4))
+                topk_values, topk_indexes = torch.topk(scores.max(dim=2).values, k, dim=1)  # Lấy max score cho mỗi query
+                topk_boxes = topk_indexes.unsqueeze(-1).repeat(1, 1, 4)
+                topk_classes = torch.gather(scores.argmax(dim=2), 1, topk_indexes)
+                bboxes = torch.gather(bboxes, 1, topk_boxes)
                 scores = topk_values
-                pred_masks = torch.gather(pred_masks, 1, topk_boxes.unsqueeze(-1).repeat(1, 1, pred_masks.shape[-1])) if pred_masks is not None else None
+                pred_masks = torch.gather(pred_masks, 1, topk_indexes.unsqueeze(-1).repeat(1, 1, pred_masks.shape[-1])) if pred_masks is not None else None
                 preds = [torch.cat([xywh2xyxy(bbox), score[..., None], cls[..., None]], dim=-1) 
-                         for bbox, score, cls in zip(bboxes, scores, lbs)]
+                         for bbox, score, cls in zip(bboxes, scores, topk_classes)]
             else:
                 pred_bboxes, train_out = preds[0], preds[1]
                 protos = train_out[-1] if len(train_out) > 1 else None
