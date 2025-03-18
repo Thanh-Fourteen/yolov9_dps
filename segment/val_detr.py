@@ -311,10 +311,6 @@ def run(
 
         bb = targets[:,2:].to(device)
         cls =  targets[:,1].to(device, dtype=torch.long)
-        print(f"\ncls shape: {cls.shape}")
-        print(f"\nbb shape: {bb.shape}")
-        print(f"\nmasks shape: {masks.shape}")
-        print(f"\ngt_groups shape: {len(gt_groups)}")
 
         _targets = {
             "cls": targets[:,1].to(device, dtype=torch.long),
