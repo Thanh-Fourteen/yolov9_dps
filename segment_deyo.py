@@ -317,10 +317,13 @@ def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictio
                     #         mask_slices = torch.empty(0)
                     #     unique_masks.append(mask_slices)
                     
-                    # bb = targets[:,2:].to(device)
-                    # print(f"\nbb shape: {bb.shape}")
-                    # print(f"\nmasks shape: {masks.shape}")
-                    # exit()
+                    bb = targets[:,2:].to(device)
+                    cls =  targets[:,1].to(device, dtype=torch.long)
+                    print(f"\ncls shape: {cls.shape}")
+                    print(f"\nbb shape: {bb.shape}")
+                    print(f"\nmasks shape: {masks.shape}")
+                    print(f"\ngt_groups shape: {gt_groups.shape}")
+                    exit()
                    
                     _targets = {
                         "cls": targets[:,1].to(device, dtype=torch.long),
