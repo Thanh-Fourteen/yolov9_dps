@@ -267,7 +267,7 @@ def run(
         with dt[1]:
             preds = model(im, batch=_targets, detr=True)
             if compute_loss:
-                dec_bboxes, dec_scores, dec_masks, enc_bboxes, enc_scores, enc_masks, dn_meta = preds
+                dec_bboxes, dec_scores, dec_masks, enc_bboxes, enc_scores, enc_masks, dn_meta = preds[1]
                 if dn_meta is not None:
                     dn_bboxes, dec_bboxes = torch.split(dec_bboxes, dn_meta["dn_num_split"], dim=2)
                     dn_scores, dec_scores = torch.split(dec_scores, dn_meta["dn_num_split"], dim=2)
