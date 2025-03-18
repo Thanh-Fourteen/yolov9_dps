@@ -367,8 +367,8 @@ class DETRLoss(nn.Module):
         src_masks, target_masks = self._get_assigned_bboxes(masks, gt_mask, match_indices, gt_groups)
         src_masks = F.interpolate(src_masks.unsqueeze(0), size=target_masks.shape[-2:], mode='bilinear')[0]
         target_masks = target_masks.float()  # Chuyển target_masks sang float32
-        loss[name_mask] = self.loss_gain['mask'] * sigmoid_focal_loss(src_masks, target_masks, num_gts) / len(target_masks)
-        loss[name_dice] = self.loss_gain['dice'] * self._dice_loss(src_masks, target_masks, num_gts) / len(target_masks)
+        loss[name_mask] = self.loss_gain['mask'] * sigmoid_focal_loss(src_masks, target_masks, num_gts) 
+        loss[name_dice] = self.loss_gain['dice'] * self._dice_loss(src_masks, target_masks, num_gts) 
         return loss
 
     # This function is for future RT-DETR Segment models
