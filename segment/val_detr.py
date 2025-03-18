@@ -265,6 +265,7 @@ def run(
 
     # Dataloader
     if not training:
+        print("\n\n Not training \n\n")
         if pt and not single_cls:
             ncm = model.model.nc
             assert ncm == nc, f'{weights} ({ncm} classes) trained on different --data than what you passed ({nc} classes)'
