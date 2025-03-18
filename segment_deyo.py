@@ -322,7 +322,7 @@ def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictio
                     print(f"\ncls shape: {cls.shape}")
                     print(f"\nbb shape: {bb.shape}")
                     print(f"\nmasks shape: {masks.shape}")
-                    print(f"\ngt_groups shape: {gt_groups.shape}")
+                    print(f"\ngt_groups shape: {len(gt_groups)}")
                     exit()
                    
                     _targets = {
