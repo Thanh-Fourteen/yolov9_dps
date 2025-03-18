@@ -288,17 +288,20 @@ def run(
                 mloss = (mloss * batch_i + loss_items) / (batch_i + 1)
 
         # Lọc topk dự đoán
-        bs, _, nd = dec_scores[-1].shape  # Lấy tầng cuối của decoder
-        bboxes, scores = dec_bboxes[-1].split((4, nd - 4), dim=-1)
+        bboxes = dec_bboxes[-1]  # [bs, num_queries, 4]
+        scores = dec_scores[-1]  # [bs, num_queries, num_classes]
+        pred_masks = dec_masks[-1]  # [bs, num_queries, h, w]
         outputs = [torch.zeros((0, 6), device=bboxes.device)] * bs
-        topk_values, topk_indexes = torch.topk(scores.reshape(bs, -1), max_det, dim=1)
-        topk_boxes = topk_indexes // scores.shape[2]
-        lbs = topk_indexes % scores.shape[2]
-        bboxes = torch.gather(bboxes, 1, topk_boxes.unsqueeze(-1).repeat(1, 1, 4))
-        scores = topk_values
-        pred_masks = dec_masks[-1]  # Lấy masks từ tầng cuối
 
-        for i, (bbox, score, cls) in enumerate(zip(bboxes, scores, lbs)):
+        # Chọn top-k dựa trên scores
+        topk_values, topk_indexes = torch.topk(scores.max(dim=-1).values, max_det, dim=1)  # [bs, max_det]
+        topk_boxes = topk_indexes  # Chỉ số của topk queries
+        topk_labels = scores.gather(2, topk_boxes.unsqueeze(-1).repeat(1, 1, scores.shape[-1])).argmax(dim=-1)  # [bs, max_det]
+
+        for i in range(bs):
+            bbox = bboxes[i, topk_boxes[i]]  # [max_det, 4]
+            score = topk_values[i]  # [max_det]
+            cls = topk_labels[i]  # [max_det]
             bbox = xywh2xyxy(bbox)
             pred = torch.cat([bbox, score[..., None], cls[..., None]], dim=-1)
             pred = pred[score.argsort(descending=True)]
