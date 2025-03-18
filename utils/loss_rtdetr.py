@@ -143,8 +143,7 @@ class HungarianMatcher(nn.Module):
         out_mask = F.grid_sample(masks.detach(), sample_points, align_corners=False).squeeze(-2)
         out_mask = out_mask.flatten(0, 1)
 
-        # tgt_mask = torch.cat(gt_mask).unsqueeze(1)
-        tgt_mask = torch.unsqueeze(1)
+        tgt_mask = torch.cat(gt_mask).unsqueeze(1)
         sample_points = torch.cat([a.repeat(b, 1, 1, 1) for a, b in zip(sample_points, num_gts) if b > 0])
         sample_points = sample_points.to(tgt_mask.device)
         tgt_mask = tgt_mask.float()
@@ -620,6 +619,8 @@ class DETRLoss(nn.Module):
         gt_bboxes = batch["bboxes"].to(self.device)
         gt_groups = batch["gt_groups"]  # Danh sách int, không cần to(device)
         gt_masks = batch["mask"].to(self.device, non_blocking=True)
+
+        print(f"type gt_masks: {type(gt_masks)} - shape: {gt_masks.shape}")
 
         total_loss = self._get_loss(
             pred_bboxes[-1], pred_scores[-1], gt_bboxes, gt_cls, gt_groups, 
