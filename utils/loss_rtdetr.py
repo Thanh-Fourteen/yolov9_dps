@@ -547,10 +547,8 @@ class DETRLoss(nn.Module):
         else:  # Trường hợp mask (gt_bboxes là danh sách các tensor)
             assert gt_groups is not None, "gt_groups must be provided for mask assignment"
             gt_groups_cumsum = torch.as_tensor([0, *gt_groups[:-1]], device=self.device).cumsum_(0)
-            # Chuyển tất cả tensor trong gt_bboxes sang self.device
-            gt_bboxes = [t.to(self.device) for t in gt_bboxes]
-            # Chuyển j sang self.device trong match_indices
-            match_indices = [(i.to(self.device), j.to(self.device)) for i, j in match_indices]
+            # Chuyển tất cả tensor trong gt_bboxes sang self.device và kiểm tra
+            gt_bboxes = [t.to(self.device, non_blocking=True) for t in gt_bboxes]  # Thêm non_blocking để tối ưu
             gt_assigned = torch.cat(
                 [
                     (
@@ -558,9 +556,9 @@ class DETRLoss(nn.Module):
                         else torch.zeros((0,) + t.shape[1:], device=self.device)
                     )
                     for t, (_, j), k in zip(gt_bboxes, match_indices, range(len(gt_bboxes)))
-                    if len(t) > 0
+                    if len(t) > 0  # Bỏ qua tensor rỗng
                 ]
-            ).float()
+            ).float()  # Chuyển sang float32 cho mask
 
         return pred_assigned, gt_assigned
 
@@ -657,16 +655,21 @@ class DETRLoss(nn.Module):
         """
         self.device = pred_bboxes.device
         match_indices = kwargs.get("match_indices", None)
-        gt_cls, gt_bboxes, gt_groups, gt_masks = batch["cls"], batch["bboxes"], batch["gt_groups"], batch["mask"]
+        gt_cls = batch["cls"].to(self.device)
+        gt_bboxes = batch["bboxes"].to(self.device)
+        gt_groups = batch["gt_groups"]  # Danh sách int, không cần to(device)
+        gt_masks = [m.to(self.device, non_blocking=True) for m in batch["mask"]]  # Chuyển từng tensor sang device
 
         total_loss = self._get_loss(
-            pred_bboxes[-1], pred_scores[-1], gt_bboxes, gt_cls, gt_groups, masks = pred_masks[-1], gt_mask=gt_masks, postfix=postfix, match_indices=match_indices
+            pred_bboxes[-1], pred_scores[-1], gt_bboxes, gt_cls, gt_groups, 
+            masks=pred_masks[-1], gt_mask=gt_masks, postfix=postfix, match_indices=match_indices
         )
 
         if self.aux_loss:
             total_loss.update(
                 self._get_loss_aux(
-                    pred_bboxes[:-1], pred_scores[:-1], gt_bboxes, gt_cls, gt_groups, match_indices, postfix, masks = pred_masks[:-1], gt_mask = gt_masks
+                    pred_bboxes[:-1], pred_scores[:-1], gt_bboxes, gt_cls, gt_groups, 
+                    match_indices, postfix, masks=pred_masks[:-1], gt_mask=gt_masks
                 )
             )
 
