@@ -699,5 +699,3 @@ def run(**kwargs):
 if __name__ == "__main__":
     opt = parse_opt()
     main(opt)
-
-# code gọn lại phần GPU cho cùng nhau và phần float, haft trong val

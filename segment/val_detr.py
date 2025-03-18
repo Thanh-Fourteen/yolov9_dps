@@ -10,7 +10,7 @@ import torch
 from tqdm import tqdm
 
 FILE = Path(__file__).resolve()
-ROOT = FILE.parents[0]  # YOLO root directory
+ROOT = FILE.parents[1]  # YOLO root directory
 if str(ROOT) not in sys.path:
     sys.path.append(str(ROOT))  # add ROOT to PATH
 ROOT = Path(os.path.relpath(ROOT, Path.cwd()))  # relative
@@ -18,6 +18,7 @@ ROOT = Path(os.path.relpath(ROOT, Path.cwd()))  # relative
 import torch.nn.functional as F
 
 from models.common import DetectMultiBackend
+from models.yolo import SegmentationModel
 from utils.callbacks import Callbacks
 from utils.general import (LOGGER, NUM_THREADS, TQDM_BAR_FORMAT, Profile, check_dataset, check_img_size,
                            check_yaml, coco80_to_coco91_class, colorstr, increment_path,
@@ -25,41 +26,26 @@ from utils.general import (LOGGER, NUM_THREADS, TQDM_BAR_FORMAT, Profile, check_
 from utils.metrics import ConfusionMatrix, box_iou
 from utils.plots import output_to_target, plot_val_study
 from utils.segment.dataloaders import create_dataloader
-# from utils.segment.general import mask_iou
 from utils.segment.metrics import Metrics, ap_per_class
 from utils.segment.plots import plot_images_and_masks
 from utils.torch_utils import select_device, smart_inference_mode
 
+# Import từ file loss_rtdetr.py
+from utils.loss_rtdetr import RTDETRSegmentLoss, HungarianMatcher
+
 def mask_iou(mask1, mask2, eps=1e-7):
-    """
-    Calculate IoU between two sets of binary masks.
-
-    Args:
-        mask1: [N, n] - Predicted masks, N is number of predicted objects, n is flattened size (w * h)
-        mask2: [M, n] - Ground truth masks, M is number of gt objects, n is flattened size (w * h)
-        eps: Small value to avoid division by zero
-
-    Returns:
-        iou: [N, M] - IoU scores between each pair of predicted and gt masks
-    """
-    # Đảm bảo mask1 và mask2 là nhị phân (nếu cần)
-    mask1 = mask1.float()  # Chuyển sang float nếu chưa
+    """Tính IoU giữa hai tập hợp mặt nạ nhị phân."""
+    mask1 = mask1.float()
     mask2 = mask2.float()
-
-    # Tính intersection
     intersection = torch.matmul(mask1, mask2.t()).clamp(min=0)
-
-    # Tính union
-    area1 = mask1.sum(dim=1, keepdim=True)  # [N, 1]
-    area2 = mask2.sum(dim=1, keepdim=False)  # [M]
-    union = area1 + area2[None, :] - intersection  # [N, M]
-
-    # Tính IoU
+    area1 = mask1.sum(dim=1, keepdim=True)
+    area2 = mask2.sum(dim=1, keepdim=False)
+    union = area1 + area2[None, :] - intersection
     iou = intersection / (union + eps)
-    return iou.clamp(min=0, max=1)  # Giới hạn IoU trong [0, 1]
+    return iou.clamp(min=0, max=1)
 
 def ap_per_class_box_and_mask(tp_b, tp_m, conf, pred_cls, target_cls, plot=False, save_dir='.', names=()):
-    """Tính toán chỉ số AP cho hộp giới hạn và mặt nạ."""
+    """Tính toán AP cho hộp giới hạn và mặt nạ."""
     def compute_ap(tp, conf, pred_cls, target_cls):
         i = np.argsort(-conf)
         tp, conf, pred_cls = tp[i], conf[i], pred_cls[i]
@@ -88,13 +74,10 @@ def ap_per_class_box_and_mask(tp_b, tp_m, conf, pred_cls, target_cls, plot=False
         ap = np.trapz(np.interp(x, mrec, mpre), x)
         return ap
 
-    # Tính AP cho hộp giới hạn
     results_boxes = ap_per_class(tp_b, conf, pred_cls, target_cls, plot=plot, save_dir=save_dir, names=names, prefix="Box")
     tp_b, fp_b, p_b, r_b, f1_b, ap_b, ap_class_b = results_boxes
 
-    # Tính AP cho mặt nạ
     results_masks = ap_per_class(tp_m, conf, pred_cls, target_cls, plot=plot, save_dir=save_dir, names=names, prefix="Mask")
-    print(f"True positives for masks: {tp_m.sum()}")
     tp_m, fp_m, p_m, r_m, f1_m, ap_m, ap_class_m = results_masks
 
     results = {
@@ -103,19 +86,15 @@ def ap_per_class_box_and_mask(tp_b, tp_m, conf, pred_cls, target_cls, plot=False
     }
     return results
 
-
 def save_one_txt(predn, save_conf, shape, file):
-    # Save one txt result
-    gn = torch.tensor(shape)[[1, 0, 1, 0]]  # normalization gain whwh
+    gn = torch.tensor(shape)[[1, 0, 1, 0]]
     for *xyxy, conf, cls in predn.tolist():
-        xywh = (xyxy2xywh(torch.tensor(xyxy).view(1, 4)) / gn).view(-1).tolist()  # normalized xywh
-        line = (cls, *xywh, conf) if save_conf else (cls, *xywh)  # label format
+        xywh = (xyxy2xywh(torch.tensor(xyxy).view(1, 4)) / gn).view(-1).tolist()
+        line = (cls, *xywh, conf) if save_conf else (cls, *xywh)
         with open(file, 'a') as f:
             f.write(('%g ' * len(line)).rstrip() % line + '\n')
 
-
 def save_one_json(predn, jdict, path, class_map, pred_masks):
-    # Save one JSON result {"image_id": 42, "category_id": 18, "bbox": [258.15, 41.29, 348.26, 243.78], "score": 0.236}
     from pycocotools.mask import encode
 
     def single_encode(x):
@@ -124,8 +103,8 @@ def save_one_json(predn, jdict, path, class_map, pred_masks):
         return rle
 
     image_id = int(path.stem) if path.stem.isnumeric() else path.stem
-    box = xyxy2xywh(predn[:, :4])  # xywh
-    box[:, :2] -= box[:, 2:] / 2  # xy center to top-left corner
+    box = xyxy2xywh(predn[:, :4])
+    box[:, :2] -= box[:, 2:] / 2
     pred_masks = np.transpose(pred_masks, (2, 0, 1))
     with ThreadPool(NUM_THREADS) as pool:
         rles = pool.map(single_encode, pred_masks)
@@ -136,92 +115,65 @@ def save_one_json(predn, jdict, path, class_map, pred_masks):
             'bbox': [round(x, 3) for x in b],
             'score': round(p[4], 5),
             'segmentation': rles[i]})
-    
+
 def process_batch(detections, labels, iouv, pred_masks=None, gt_masks=None, overlap=False, masks=False):
-    """
-    Return correct prediction matrix
-    Arguments:
-        detections (array[N, 6]), x1, y1, x2, y2, conf, class
-        labels (array[M, 5]), class, x1, y1, x2, y2
-    Returns:
-        correct (array[N, 10]), for 10 IoU levels
-    """
-    if masks:
+    """Trả về ma trận dự đoán đúng."""
+    if masks and pred_masks is not None and gt_masks is not None:
         if overlap:
             nl = len(labels)
             index = torch.arange(nl, device=gt_masks.device).view(nl, 1, 1) + 1
-            gt_masks = gt_masks.repeat(nl, 1, 1)  # shape(1,640,640) -> (n,640,640)
+            gt_masks = gt_masks.repeat(nl, 1, 1)
             gt_masks = torch.where(gt_masks == index, 1.0, 0.0)
-        
+
         # Nội suy pred_masks lên kích thước của gt_masks
-        if gt_masks.shape[1:] != pred_masks.shape[1:]:
-            pred_masks = F.interpolate(pred_masks[None], gt_masks.shape[1:], mode="bilinear", align_corners=False)[0]
-        # if gt_masks.shape[1:] != pred_masks.shape[1:]:
-        #     pred_masks = F.interpolate(pred_masks[None], gt_masks.shape[1:], mode="bilinear", align_corners=False)[0]
+        if pred_masks.dim() == 3:  # [N, H, W] -> [N, 1, H, W]
+            pred_masks = pred_masks.unsqueeze(1)
+        if gt_masks.shape[1:] != pred_masks.shape[2:]:
+            pred_masks = F.interpolate(pred_masks, size=gt_masks.shape[1:], mode="bilinear", align_corners=False)
+        pred_masks = pred_masks.squeeze(1)  # [N, 1, H, W] -> [N, H, W]
         
-        # Ngưỡng hóa
         pred_masks = (pred_masks > 0.5).float()
         gt_masks = gt_masks.gt_(0.5)
         
-        # Debug
-        print(f"GT masks shape: {gt_masks.shape}, Pred masks shape: {pred_masks.shape}")
-        print(f"GT unique: {torch.unique(gt_masks)}, Pred unique: {torch.unique(pred_masks)}")
-        
-        # Tính IoU
         gt = gt_masks.view(gt_masks.shape[0], -1)
         pm = pred_masks.view(pred_masks.shape[0], -1)
-        iou = mask_iou(gt, pm)
-
-        print(f"Mask IoU: {iou}")
-    else:  # boxes
+        iou = mask_iou(pm, gt)  # Chuyển pm thành hàng đầu tiên để khớp với labels
+    else:
         iou = box_iou(labels[:, 1:], detections[:, :4])
 
     correct = np.zeros((detections.shape[0], iouv.shape[0])).astype(bool)
     correct_class = labels[:, 0:1] == detections[:, 5]
     for i in range(len(iouv)):
-        x = torch.where((iou >= iouv[i]) & correct_class)  # IoU > threshold and classes match
+        x = torch.where((iou >= iouv[i]) & correct_class)
         if x[0].shape[0]:
-            matches = torch.cat((torch.stack(x, 1), iou[x[0], x[1]][:, None]), 1).cpu().numpy()  # [label, detect, iou]
+            matches = torch.cat((torch.stack(x, 1), iou[x[0], x[1]][:, None]), 1).cpu().numpy()
             if x[0].shape[0] > 1:
                 matches = matches[matches[:, 2].argsort()[::-1]]
                 matches = matches[np.unique(matches[:, 1], return_index=True)[1]]
-                # matches = matches[matches[:, 2].argsort()[::-1]]
                 matches = matches[np.unique(matches[:, 0], return_index=True)[1]]
             correct[matches[:, 1].astype(int), i] = True
     return torch.tensor(correct, dtype=torch.bool, device=iouv.device)
 
-def compute_segmentation_metrics(pred_masks, gt_masks, iou_threshold=0.5):
-    """Tính toán IoU và Dice Score cho mặt nạ phân đoạn."""
-    pred_masks = (pred_masks > 0.5).float()  # Ngưỡng hóa mặt nạ dự đoán
-    intersection = (pred_masks * gt_masks).sum(dim=(-2, -1))  # Giao giữa dự đoán và nhãn
-    union = pred_masks.sum(dim=(-2, -1)) + gt_masks.sum(dim=(-2, -1)) - intersection  # Hợp
-    iou = intersection / (union + 1e-6)  # IoU
-    dice = 2 * intersection / (pred_masks.sum(dim=(-2, -1)) + gt_masks.sum(dim=(-2, -1)) + 1e-6)  # Dice Score
-    
-    # Đếm số lượng mặt nạ đạt ngưỡng IoU
-    correct = (iou >= iou_threshold).float()
-    return iou.mean(), dice.mean(), correct.mean()
-
 @smart_inference_mode()
 def run(
         data,
-        weights=None,  # model.pt path(s)
-        batch_size=32,  # batch size
-        imgsz=640,  # inference size (pixels)
-        max_det=300,  # maximum detections per image
-        task='val',  # train, val, test, speed or study
-        device='',  # cuda device, i.e. 0 or 0,1,2,3 or cpu
-        workers=8,  # max dataloader workers (per RANK in DDP mode)
-        single_cls=False,  # treat as single-class dataset
-        verbose=False,  # verbose output
-        save_txt=False,  # save results to *.txt
-        save_conf=False,  # save confidences in --save-txt labels
-        save_json=False,  # save a COCO-JSON results file
-        project=ROOT / 'runs/val-seg',  # save to project/name
-        name='exp',  # save to project/name
-        exist_ok=False,  # existing project/name ok, do not increment
-        half=True,  # use FP16 half-precision inference
-        dnn=False,  # use OpenCV DNN for ONNX inference
+        weights=None,
+        batch_size=32,
+        imgsz=640,
+        max_det=300,
+        task='val',
+        device='',
+        workers=8,
+        single_cls=False,
+        verbose=False,
+        save_txt=False,
+        save_conf=False,
+        save_json=False,
+        project=ROOT / 'runs/val-seg',
+        name='exp',
+        exist_ok=False,
+        half=True,
+        dnn=False,
         model=None,
         dataloader=None,
         save_dir=Path(''),
@@ -231,10 +183,10 @@ def run(
         compute_loss=None,
         callbacks=Callbacks(),
 ):
-    # Initialize/load model and set device
+    # Khởi tạo mô hình và thiết bị
     training = model is not None
     if training:
-        device, pt, jit, engine = next(model.parameters()).device, True, False, False
+        device = next(model.parameters()).device
         half &= device.type != 'cpu'
         model.half() if half else model.float()
     else:
@@ -248,28 +200,22 @@ def run(
         if engine:
             batch_size = model.batch_size
         else:
-            device = model.device
             if not (pt or jit):
                 batch_size = 1
-                LOGGER.info(f'Forcing --batch-size 1 square inference (1,3,{imgsz},{imgsz}) for non-PyTorch models')
         data = check_dataset(data)
 
-    # Configure
+    # Cấu hình
     model.eval()
     cuda = device.type != 'cpu'
-    is_coco = isinstance(data.get('val'), str) and data['val'].endswith(f'val2017.txt')
+    is_coco = isinstance(data.get('val'), str) and data['val'].endswith('val2017.txt')
     nc = 1 if single_cls else int(data['nc'])
     iouv = torch.linspace(0.5, 0.95, 10, device=device)
     niou = iouv.numel()
 
     # Dataloader
     if not training:
-        if pt and not single_cls:
-            ncm = model.model.nc
-            assert ncm == nc, f'{weights} ({ncm} classes) trained on different --data than what you passed ({nc} classes)'
         model.warmup(imgsz=(1 if pt else batch_size, 3, imgsz, imgsz), detr=True)
-        pad, rect = (0.0, False) if task == 'speed' else (0.5, pt)
-        task = task if task in ('train', 'val', 'test') else 'val'
+        pad, rect = (0.5, pt)
         dataloader = create_dataloader(data[task],
                                        imgsz,
                                        batch_size,
@@ -301,19 +247,17 @@ def run(
             if cuda:
                 im = im.to(device, non_blocking=True)
                 targets = targets.to(device)
+                masks = masks.to(device, non_blocking=True)
             im = im.half() if half else im.float()
             im /= 255
 
-        # Chuẩn bị nhãn mặt nạ
+        # Chuẩn bị nhãn
         bs = len(im)
         batch_idx = targets[:, 0]
         gt_groups = [(batch_idx == i).sum().item() for i in range(bs)]
 
-        bb = targets[:,2:].to(device)
-        cls =  targets[:,1].to(device, dtype=torch.long)
-
         _targets = {
-            "cls": targets[:,1].to(device, dtype=torch.long),
+            "cls": targets[:, 1].to(device, dtype=torch.long),
             "bboxes": targets[:, 2:].to(device),
             "batch_idx": batch_idx.to(device, dtype=torch.long).view(-1),
             "gt_groups": gt_groups,
@@ -322,50 +266,46 @@ def run(
 
         with dt[1]:
             preds = model(im, batch=_targets, detr=True)
-
             if compute_loss:
-                dec_bboxes, dec_scores, dec_masks, enc_bboxes, enc_scores, enc_masks, dn_meta = preds[1]
-                print(f"Predicted masks shape: {dec_masks.shape}")
-                if dn_meta is None:
-                    dn_bboxes, dn_scores, dn_masks = None, None, None
-                else:
+                dec_bboxes, dec_scores, dec_masks, enc_bboxes, enc_scores, enc_masks, dn_meta = preds
+                if dn_meta is not None:
                     dn_bboxes, dec_bboxes = torch.split(dec_bboxes, dn_meta["dn_num_split"], dim=2)
                     dn_scores, dec_scores = torch.split(dec_scores, dn_meta["dn_num_split"], dim=2)
                     dn_masks, dec_masks = torch.split(dec_masks, dn_meta["dn_num_split"], dim=2)
-                    
+                else:
+                    dn_bboxes, dn_scores, dn_masks = None, None, None
+                
                 dec_bboxes = torch.cat([enc_bboxes.unsqueeze(0), dec_bboxes])
                 dec_scores = torch.cat([enc_scores.unsqueeze(0), dec_scores])
                 dec_masks = torch.cat([enc_masks.unsqueeze(0), dec_masks])
 
                 loss = compute_loss((dec_bboxes, dec_scores, dec_masks), _targets,
-                                    dn_bboxes=dn_bboxes, dn_scores=dn_scores, dn_masks=dn_masks,
-                                    dn_meta=dn_meta)
+                                   dn_bboxes=dn_bboxes, dn_scores=dn_scores, dn_masks=dn_masks,
+                                   dn_meta=dn_meta)
                 loss, loss_items = sum(loss.values()), torch.as_tensor(
                     [loss[k].detach() for k in ["loss_giou", "loss_class", "loss_bbox", "loss_mask", "loss_dice"]], device=device
                 )
                 mloss = (mloss * batch_i + loss_items) / (batch_i + 1)
 
-        # Lọc hộp giới hạn
-        bs, _, nd = preds[0].shape
-        bboxes, scores = preds[0].split((4, nd - 4), dim=-1)
+        # Lọc topk dự đoán
+        bs, _, nd = dec_scores[-1].shape  # Lấy tầng cuối của decoder
+        bboxes, scores = dec_bboxes[-1].split((4, nd - 4), dim=-1)
         outputs = [torch.zeros((0, 6), device=bboxes.device)] * bs
-        topk_values, topk_indexes = torch.topk(scores.reshape(scores.shape[0], -1), max_det, dim=1)
+        topk_values, topk_indexes = torch.topk(scores.reshape(bs, -1), max_det, dim=1)
         topk_boxes = topk_indexes // scores.shape[2]
         lbs = topk_indexes % scores.shape[2]
         bboxes = torch.gather(bboxes, 1, topk_boxes.unsqueeze(-1).repeat(1, 1, 4))
         scores = topk_values
+        pred_masks = dec_masks[-1]  # Lấy masks từ tầng cuối
 
-        for i, bbox in enumerate(bboxes):
+        for i, (bbox, score, cls) in enumerate(zip(bboxes, scores, lbs)):
             bbox = xywh2xyxy(bbox)
-            score = scores[i]
-            cls = lbs[i]
             pred = torch.cat([bbox, score[..., None], cls[..., None]], dim=-1)
             pred = pred[score.argsort(descending=True)]
             outputs[i] = pred
-        preds = outputs
 
         # Đánh giá
-        for si, pred in enumerate(preds):
+        for si, pred in enumerate(outputs):
             labels = targets[targets[:, 0] == si, 1:]
             nl, npr = labels.shape[0], pred.shape[0]
             path, shape = Path(paths[si]), shapes[si][0]
@@ -385,25 +325,17 @@ def run(
             predn = pred.clone()
             scale_boxes(im[si].shape[1:], predn[:, :4], shape, shapes[si][1])
 
-            # Đánh giá phát hiện đối tượng và phân đoạn
             if nl:
                 tbox = xywh2xyxy(labels[:, 1:5]) * torch.tensor(im[si].shape[1:], device=device)[[1, 0, 1, 0]]
                 scale_boxes(im[si].shape[1:], tbox, shape, shapes[si][1])
                 labelsn = torch.cat((labels[:, 0:1], tbox), 1)
                 
-                # Đánh giá hộp giới hạn
                 correct_bboxes = process_batch(predn, labelsn, iouv)
                 
-                # Đánh giá mặt nạ
                 gt_mask = _targets["mask"][si]
-                if gt_mask.numel() > 0:
-                    pred_masks = dec_masks[-1, si]  # Tầng cuối của dec_masks
-                    topk_pred_masks = pred_masks[topk_boxes[si]]
-                    print(f"Top-k predicted masks shape: {topk_pred_masks.shape}")
-                    correct_masks = process_batch(predn, labelsn, iouv, topk_pred_masks, gt_mask, masks=True)
-                    print(f"Sample {si}: {nl} labels, {npr} predictions")
-                    print(f"GT mask shape: {gt_mask.shape}, Pred mask shape: {topk_pred_masks.shape}")
-                    print(f"Correct masks: {correct_masks.sum()}")
+                if gt_mask.numel() > 0 and npr > 0:
+                    topk_pred_masks = pred_masks[si, topk_boxes[si]]  # [npr, h, w]
+                    correct_masks = process_batch(predn, labelsn, iouv, topk_pred_masks, gt_mask, overlap=overlap, masks=True)
                 if plots:
                     confusion_matrix.process_batch(predn, labelsn)
             
@@ -412,22 +344,17 @@ def run(
             if save_txt:
                 save_one_txt(predn, save_conf, shape, file=save_dir / 'labels' / f'{path.stem}.txt')
             if save_json:
-                save_one_json(predn, jdict, path, class_map)
-
-            # callbacks.run('on_val_image_end', pred, predn, path, names, im[si])
+                save_one_json(predn, jdict, path, class_map, pred_masks[si, topk_boxes[si]].cpu().numpy())
 
         if plots and batch_i < 3:
-            if len(plot_masks):
-                plot_masks = torch.cat(plot_masks, dim=0)
             plot_images_and_masks(im, targets, masks, paths, save_dir / f'val_batch{batch_i}_labels.jpg', names)
-            plot_images_and_masks(im, output_to_target(preds, max_det=15), plot_masks, paths,
-                                  save_dir / f'val_batch{batch_i}_pred.jpg', names)  # pred
+            plot_images_and_masks(im, output_to_target(outputs, max_det=15), pred_masks[:, :15], paths,
+                                  save_dir / f'val_batch{batch_i}_pred.jpg', names)
 
-        callbacks.run('on_val_batch_end', batch_i, im, targets, paths, shapes, preds)
+        callbacks.run('on_val_batch_end', batch_i, im, targets, paths, shapes, outputs)
 
     # Tính toán chỉ số
     stats = [torch.cat(x, 0).cpu().numpy() for x in zip(*stats)]
-    print(f"Stats length: {len(stats)}, Correct masks sum: {stats[1].sum()}")
     metrics = Metrics()
     if len(stats) and stats[0].any():
         results = ap_per_class_box_and_mask(*stats, plot=plots, save_dir=save_dir, names=names)
@@ -441,7 +368,7 @@ def run(
     if nt.sum() == 0:
         LOGGER.warning(f'WARNING ⚠️ no labels found in {task} set, can not compute metrics without labels')
 
-    if verbose or (nc < 50 and not training) and nc > 1 and len(stats):
+    if verbose and nc > 1 and len(stats):
         for i, c in enumerate(metrics.ap_class_index):
             LOGGER.info(pf % (names[c], seen, nt[c], *metrics.class_result(i)))
 
@@ -490,24 +417,19 @@ def run(
                     *(mloss.cpu() / len(dataloader)).tolist())
     return final_metric, metrics.get_maps(nc), t
 
-
 def parse_opt():
     parser = argparse.ArgumentParser()
     parser.add_argument('--data', type=str, default=ROOT / 'data/coco.yaml', help='dataset.yaml path')
     parser.add_argument('--weights', nargs='+', type=str, default=ROOT / 'yolo.pt', help='model path(s)')
     parser.add_argument('--batch-size', type=int, default=32, help='batch size')
     parser.add_argument('--imgsz', '--img', '--img-size', type=int, default=640, help='inference size (pixels)')
-    parser.add_argument('--conf-thres', type=float, default=0.001, help='confidence threshold')
-    parser.add_argument('--iou-thres', type=float, default=0.7, help='NMS IoU threshold')
     parser.add_argument('--max-det', type=int, default=300, help='maximum detections per image')
     parser.add_argument('--task', default='val', help='train, val, test, speed or study')
     parser.add_argument('--device', default='', help='cuda device, i.e. 0 or 0,1,2,3 or cpu')
     parser.add_argument('--workers', type=int, default=8, help='max dataloader workers (per RANK in DDP mode)')
     parser.add_argument('--single-cls', action='store_true', help='treat as single-class dataset')
-    parser.add_argument('--augment', action='store_true', help='augmented inference')
     parser.add_argument('--verbose', action='store_true', help='report mAP by class')
     parser.add_argument('--save-txt', action='store_true', help='save results to *.txt')
-    parser.add_argument('--save-hybrid', action='store_true', help='save label+prediction hybrid results to *.txt')
     parser.add_argument('--save-conf', action='store_true', help='save confidences in --save-txt labels')
     parser.add_argument('--save-json', action='store_true', help='save a COCO-JSON results file')
     parser.add_argument('--project', default=ROOT / 'runs/val', help='save to project/name')
@@ -515,47 +437,35 @@ def parse_opt():
     parser.add_argument('--exist-ok', action='store_true', help='existing project/name ok, do not increment')
     parser.add_argument('--half', action='store_true', help='use FP16 half-precision inference')
     parser.add_argument('--dnn', action='store_true', help='use OpenCV DNN for ONNX inference')
-    parser.add_argument('--min-items', type=int, default=0, help='Experimental')
+    parser.add_argument('--mask-downsample-ratio', type=int, default=1, help='Downsample ratio for masks')
+    parser.add_argument('--overlap', action='store_true', help='Overlap masks in evaluation')
     opt = parser.parse_args()
-    opt.data = check_yaml(opt.data)  # check YAML
+    opt.data = check_yaml(opt.data)
     opt.save_json |= opt.data.endswith('coco.yaml')
-    opt.save_txt |= opt.save_hybrid
     print_args(vars(opt))
     return opt
 
-
 def main(opt):
-    #check_requirements(exclude=('tensorboard', 'thop'))
-
-    if opt.task in ('train', 'val', 'test'):  # run normally
-        if opt.conf_thres > 0.001:  # https://github.com/ultralytics/yolov5/issues/1466
-            LOGGER.info(f'WARNING ⚠️ confidence threshold {opt.conf_thres} > 0.001 produces invalid results')
-        if opt.save_hybrid:
-            LOGGER.info('WARNING ⚠️ --save-hybrid will return high mAP from hybrid labels, not from predictions alone')
+    if opt.task in ('train', 'val', 'test'):
         run(**vars(opt))
-
     else:
         weights = opt.weights if isinstance(opt.weights, list) else [opt.weights]
-        opt.half = torch.cuda.is_available() and opt.device != 'cpu'  # FP16 for fastest results
-        if opt.task == 'speed':  # speed benchmarks
-            # python val.py --task speed --data coco.yaml --batch 1 --weights yolo.pt...
+        opt.half = torch.cuda.is_available() and opt.device != 'cpu'
+        if opt.task == 'speed':
             opt.conf_thres, opt.iou_thres, opt.save_json = 0.25, 0.45, False
             for opt.weights in weights:
                 run(**vars(opt), plots=False)
-
-        elif opt.task == 'study':  # speed vs mAP benchmarks
-            # python val.py --task study --data coco.yaml --iou 0.7 --weights yolo.pt...
+        elif opt.task == 'study':
             for opt.weights in weights:
-                f = f'study_{Path(opt.data).stem}_{Path(opt.weights).stem}.txt'  # filename to save to
-                x, y = list(range(256, 1536 + 128, 128)), []  # x axis (image sizes), y axis
-                for opt.imgsz in x:  # img-size
+                f = f'study_{Path(opt.data).stem}_{Path(opt.weights).stem}.txt'
+                x, y = list(range(256, 1536 + 128, 128)), []
+                for opt.imgsz in x:
                     LOGGER.info(f'\nRunning {f} --imgsz {opt.imgsz}...')
                     r, _, t = run(**vars(opt), plots=False)
-                    y.append(r + t)  # results and times
-                np.savetxt(f, y, fmt='%10.4g')  # save
+                    y.append(r + t)
+                np.savetxt(f, y, fmt='%10.4g')
             os.system('zip -r study.zip study_*.txt')
-            plot_val_study(x=x)  # plot
-
+            plot_val_study(x=x)
 
 if __name__ == "__main__":
     opt = parse_opt()
