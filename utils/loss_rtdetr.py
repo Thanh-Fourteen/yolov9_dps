@@ -132,44 +132,91 @@ class HungarianMatcher(nn.Module):
     
     # This function is for future RT-DETR Segment models
     def _cost_mask(self, bs, num_gts, masks=None, gt_mask=None):
-        assert masks is not None and gt_mask is not None, 'Make sure the input has `mask` and `gt_mask`'
-        # all masks share the same set of points for efficient matching
-        sample_points = torch.rand([bs, 1, self.num_sample_points, 2])
-        sample_points = 2.0 * sample_points - 1.0
-        
-        sample_points = sample_points.to(masks.device)
-        if masks.dtype != sample_points.dtype:
-            sample_points = sample_points.to(masks.dtype)
-        out_mask = F.grid_sample(masks.detach(), sample_points, align_corners=False).squeeze(-2)
-        out_mask = out_mask.flatten(0, 1)
+        assert masks is not None and gt_mask is not None, 'Hãy đảm bảo đầu vào có `mask` và `gt_mask`'
+        device = masks.device
 
-        tgt_mask = torch.cat(gt_mask).unsqueeze(1)
-        sample_points = torch.cat([a.repeat(b, 1, 1, 1) for a, b in zip(sample_points, num_gts) if b > 0])
-        sample_points = sample_points.to(tgt_mask.device)
-        tgt_mask = tgt_mask.float()
-        if tgt_mask.dtype != sample_points.dtype:
-            tgt_mask = tgt_mask.to(sample_points.dtype)
-        tgt_mask = F.grid_sample(tgt_mask, sample_points, align_corners=False).squeeze([1, 2])
-    
+        # Tạo điểm mẫu - giữ nguyên chiều batch riêng biệt
+        sample_points = torch.rand([bs, self.num_sample_points, 2], device=device) * 2.0 - 1.0
+        sample_points = sample_points.unsqueeze(1)  # [bs, 1, num_sample_points, 2]
+
+        # Xử lý các mask dự đoán
+        out_mask = F.grid_sample(masks.detach(), sample_points, align_corners=False)  # [bs, nq, 1, num_sample_points]
+        out_mask = out_mask.squeeze(-2)  # [bs, nq, num_sample_points]
+
+        # Xử lý các mask ground truth
+        tgt_mask = torch.cat(gt_mask)  # [total_gts, H, W]
+        total_gts = tgt_mask.shape[0]
+        
+        # Tạo điểm mẫu theo batch cho ground truth
+        sample_points_gt = sample_points.expand(-1, total_gts // bs, -1, -1)  # [bs, gts_per_batch, num_sample_points, 2]
+        sample_points_gt = sample_points_gt.reshape(-1, self.num_sample_points, 2)  # [bs * gts_per_batch, num_sample_points, 2]
+        
+        # Đảm bảo kích thước batch khớp nhau
+        tgt_mask = tgt_mask.view(bs, -1, *tgt_mask.shape[1:])  # [bs, gts_per_batch, H, W]
+        tgt_mask = tgt_mask.reshape(-1, *tgt_mask.shape[2:])   # [bs * gts_per_batch, H, W]
+        tgt_mask = tgt_mask.unsqueeze(1).float()  # [bs * gts_per_batch, 1, H, W]
+
+        # Lấy mẫu các mask ground truth
+        sampled_tgt = F.grid_sample(tgt_mask, sample_points_gt, align_corners=False)  # [bs * gts_per_batch, 1, 1, num_sample_points]
+        sampled_tgt = sampled_tgt.squeeze([1, 2])  # [bs * gts_per_batch, num_sample_points]
+
+        # Định hình lại để tính toán chi phí
+        out_mask = out_mask.view(-1, self.num_sample_points)  # [bs * nq, num_sample_points]
+
         with torch.amp.autocast("cuda", enabled=False):
-            # binary cross entropy cost
+            # Chi phí binary cross entropy
             pos_cost_mask = F.binary_cross_entropy_with_logits(out_mask, torch.ones_like(out_mask), reduction='none')
             neg_cost_mask = F.binary_cross_entropy_with_logits(out_mask, torch.zeros_like(out_mask), reduction='none')
-            neg_cost_mask = neg_cost_mask.to(tgt_mask.device)
-            pos_cost_mask = pos_cost_mask.to(tgt_mask.device)
-            cost_mask = torch.matmul(pos_cost_mask, tgt_mask.T) + torch.matmul(neg_cost_mask, 1 - tgt_mask.T)
+            cost_mask = torch.matmul(pos_cost_mask, sampled_tgt.T) + torch.matmul(neg_cost_mask, (1 - sampled_tgt.T))
             cost_mask /= self.num_sample_points
-    
-            # dice cost
-            out_mask = F.sigmoid(out_mask)
-            dv = out_mask.device
-            out_mask = out_mask.to(tgt_mask.device)
-            numerator = 2 * torch.matmul(out_mask, tgt_mask.T)
-            denominator = out_mask.sum(-1, keepdim=True) + tgt_mask.sum(-1).unsqueeze(0)
+
+            # Chi phí Dice
+            out_mask_sigmoid = F.sigmoid(out_mask)
+            numerator = 2 * torch.matmul(out_mask_sigmoid, sampled_tgt.T)
+            denominator = out_mask_sigmoid.sum(-1, keepdim=True) + sampled_tgt.sum(-1).unsqueeze(0) + 1e-6
             cost_dice = 1 - (numerator + 1) / (denominator + 1)
-    
+
             C = self.cost_gain['mask'] * cost_mask + self.cost_gain['dice'] * cost_dice
-        return C.to(dv)
+        return C
+    # def _cost_mask(self, bs, num_gts, masks=None, gt_mask=None):
+    #     assert masks is not None and gt_mask is not None, 'Make sure the input has `mask` and `gt_mask`'
+    #     # all masks share the same set of points for efficient matching
+    #     sample_points = torch.rand([bs, 1, self.num_sample_points, 2])
+    #     sample_points = 2.0 * sample_points - 1.0
+        
+    #     sample_points = sample_points.to(masks.device)
+    #     if masks.dtype != sample_points.dtype:
+    #         sample_points = sample_points.to(masks.dtype)
+    #     out_mask = F.grid_sample(masks.detach(), sample_points, align_corners=False).squeeze(-2)
+    #     out_mask = out_mask.flatten(0, 1)
+
+    #     tgt_mask = torch.cat(gt_mask).unsqueeze(1)
+    #     sample_points = torch.cat([a.repeat(b, 1, 1, 1) for a, b in zip(sample_points, num_gts) if b > 0])
+    #     sample_points = sample_points.to(tgt_mask.device)
+    #     tgt_mask = tgt_mask.float()
+    #     if tgt_mask.dtype != sample_points.dtype:
+    #         tgt_mask = tgt_mask.to(sample_points.dtype)
+    #     tgt_mask = F.grid_sample(tgt_mask, sample_points, align_corners=False).squeeze([1, 2])
+    
+    #     with torch.amp.autocast("cuda", enabled=False):
+    #         # binary cross entropy cost
+    #         pos_cost_mask = F.binary_cross_entropy_with_logits(out_mask, torch.ones_like(out_mask), reduction='none')
+    #         neg_cost_mask = F.binary_cross_entropy_with_logits(out_mask, torch.zeros_like(out_mask), reduction='none')
+    #         neg_cost_mask = neg_cost_mask.to(tgt_mask.device)
+    #         pos_cost_mask = pos_cost_mask.to(tgt_mask.device)
+    #         cost_mask = torch.matmul(pos_cost_mask, tgt_mask.T) + torch.matmul(neg_cost_mask, 1 - tgt_mask.T)
+    #         cost_mask /= self.num_sample_points
+    
+    #         # dice cost
+    #         out_mask = F.sigmoid(out_mask)
+    #         dv = out_mask.device
+    #         out_mask = out_mask.to(tgt_mask.device)
+    #         numerator = 2 * torch.matmul(out_mask, tgt_mask.T)
+    #         denominator = out_mask.sum(-1, keepdim=True) + tgt_mask.sum(-1).unsqueeze(0)
+    #         cost_dice = 1 - (numerator + 1) / (denominator + 1)
+    
+    #         C = self.cost_gain['mask'] * cost_mask + self.cost_gain['dice'] * cost_dice
+    #     return C.to(dv)
 
     # def _cost_mask(self, bs, num_gts, masks=None, gt_mask=None):
     #     assert masks is not None and gt_mask is not None, 'Make sure the input has `mask` and `gt_mask`'
