@@ -47,19 +47,21 @@ def save_one_json(predn, jdict, path, class_map, pred_masks=None):
         return rle
 
     image_id = int(path.stem) if path.stem.isnumeric() else path.stem
-    box = xywh2xyxy(predn[:, :4])
-    entry = {
-        'image_id': image_id,
-        'category_id': class_map[int(predn[0, 5])],
-        'bbox': [round(x, 3) for x in box[0].tolist()],
-        'score': round(predn[0, 4], 5)
-    }
-    if pred_masks is not None:
-        pred_masks = np.transpose(pred_masks, (2, 0, 1))
-        with ThreadPool(NUM_THREADS) as pool:
-            rles = pool.map(single_encode, pred_masks)
-        entry['segmentation'] = rles[0]
-    jdict.append(entry)
+    box = xyxy2xywh(predn[:, :4])
+    box[:, :2] -= box[:, 2:] / 2  # xy center to top-left corner
+    for p, b in zip(predn.tolist(), box.tolist()):
+        entry = {
+            'image_id': image_id,
+            'category_id': class_map[int(p[5])],
+            'bbox': [round(x, 3) for x in b],
+            'score': round(p[4], 5)
+        }
+        if pred_masks is not None:
+            pred_masks = np.transpose(pred_masks, (2, 0, 1))
+            with ThreadPool(NUM_THREADS) as pool:
+                rles = pool.map(single_encode, pred_masks)
+            entry['segmentation'] = rles[0]
+        jdict.append(entry)
 
 def process_batch(detections, labels, iouv, pred_masks=None, gt_masks=None, overlap=False):
     correct_bboxes = np.zeros((detections.shape[0], iouv.shape[0])).astype(bool)
@@ -136,13 +138,13 @@ def run(
     is_detr=True
 ):
     training = model is not None
-    nm = None  # Khởi tạo nm là None, chỉ dùng khi cần cho YOLO
+    nm = None
     if training:
         device = next(model.parameters()).device
         half &= device.type != 'cpu'
         model.half() if half else model.float()
         if not is_detr and isinstance(model, SegmentationModel):
-            nm = de_parallel(model).model[-1].nm  # Lấy nm chỉ khi là YOLO Segmentation
+            nm = de_parallel(model).model[-1].nm
     else:
         device = select_device(device, batch_size=batch_size)
         save_dir = increment_path(Path(project) / name, exist_ok=exist_ok)
@@ -152,7 +154,7 @@ def run(
         imgsz = check_img_size(imgsz, s=stride)
         half = model.fp16
         if not is_detr and isinstance(model, SegmentationModel):
-            nm = de_parallel(model).model.model[-1].nm  # Lấy nm chỉ khi là YOLO Segmentation
+            nm = de_parallel(model).model.model[-1].nm
 
     model.eval()
     cuda = device.type != 'cpu'
@@ -176,7 +178,7 @@ def run(
     s = ('%22s' + '%11s' * 10) % ('Class', 'Images', 'Instances', 'Box(P', "R", "mAP50", "mAP50-95)", "Mask(P", "R", "mAP50", "mAP50-95)")
     dt = Profile(), Profile(), Profile()
     metrics = Metrics()
-    mloss = torch.zeros(5 if is_detr else 4, device=device)  # GIoU, class, bbox, mask, dice (DETR) hoặc box, obj, cls (YOLO)
+    mloss = torch.zeros(5 if is_detr else 4, device=device)
     jdict, stats = [], []
     pbar = tqdm(dataloader, desc=s, bar_format=TQDM_BAR_FORMAT)
 
@@ -221,13 +223,13 @@ def run(
                 if compute_loss:
                     loss_dict = compute_loss((dec_bboxes, dec_scores, dec_masks), _targets,
                                             dn_bboxes=dn_bboxes, dn_scores=dn_scores, dn_masks=dn_masks, dn_meta=dn_meta)
-                    loss_items = torch.as_tensor([loss_dict[k] for k in ["loss_giou", "loss_class", "loss_bbox", "loss_mask", "loss_dice"]], device=device)
+                    loss_items = torch.tensor([loss_dict[k] for k in ["loss_giou", "loss_class", "loss_bbox", "loss_mask", "loss_dice"]], device=device)
                     mloss = (mloss * batch_i + loss_items) / (batch_i + 1)
 
                 bs, _, nd = pred_bboxes.shape
                 bboxes, scores = pred_bboxes.split((4, nd - 4), dim=-1)
-                num_preds = scores.reshape(bs, -1).shape[1]  # Tổng số dự đoán
-                k = min(max_det, num_preds)  # Đảm bảo k không vượt quá số dự đoán thực tế
+                num_preds = scores.reshape(bs, -1).shape[1]
+                k = min(max_det, num_preds)
                 topk_values, topk_indexes = torch.topk(scores.reshape(bs, -1), k, dim=1)
                 topk_boxes = topk_indexes // scores.shape[2]
                 lbs = topk_indexes % scores.shape[2]
@@ -235,7 +237,7 @@ def run(
                 scores = topk_values
                 preds = [torch.cat([xywh2xyxy(bbox), score[..., None], cls[..., None]], dim=-1) 
                          for bbox, score, cls in zip(bboxes, scores, lbs)]
-            else:  # YOLO
+            else:
                 pred_bboxes, train_out = preds[0], preds[1]
                 protos = train_out[-1] if len(train_out) > 1 else None
                 if compute_loss:
@@ -243,12 +245,12 @@ def run(
                     mloss = (mloss * batch_i + loss_items) / (batch_i + 1)
 
                 bs, _, nd = pred_bboxes.shape
-                if nm is not None:  # YOLO Segmentation
+                if nm is not None:
                     bboxes, scores_and_masks = pred_bboxes.split((4, nd - 4), dim=-1)
                     scores = scores_and_masks[:, :, :-nm]
                     mask_coeffs = scores_and_masks[:, :, -nm:]
-                    num_preds = scores.reshape(bs, -1).shape[1]  # Tổng số dự đoán
-                    k = min(max_det, num_preds)  # Đảm bảo k không vượt quá số dự đoán thực tế
+                    num_preds = scores.reshape(bs, -1).shape[1]
+                    k = min(max_det, num_preds)
                     topk_values, topk_indexes = torch.topk(scores.reshape(bs, -1), k, dim=1)
                     topk_boxes = topk_indexes // scores.shape[2]
                     lbs = topk_indexes % scores.shape[2]
@@ -257,10 +259,10 @@ def run(
                     mask_coeffs = torch.gather(mask_coeffs, 1, topk_boxes.unsqueeze(-1).repeat(1, 1, nm))
                     preds = [torch.cat([xywh2xyxy(bbox), score[..., None], cls[..., None]], dim=-1) 
                              for bbox, score, cls in zip(bboxes, scores, lbs)]
-                else:  # YOLO Detection (không có segmentation)
+                else:
                     bboxes, scores = pred_bboxes.split((4, nd - 4), dim=-1)
-                    num_preds = scores.reshape(bs, -1).shape[1]  # Tổng số dự đoán
-                    k = min(max_det, num_preds)  # Đảm bảo k không vượt quá số dự đoán thực tế
+                    num_preds = scores.reshape(bs, -1).shape[1]
+                    k = min(max_det, num_preds)
                     topk_values, topk_indexes = torch.topk(scores.reshape(bs, -1), k, dim=1)
                     topk_boxes = topk_indexes // scores.shape[2]
                     lbs = topk_indexes % scores.shape[2]
@@ -292,8 +294,8 @@ def run(
                 pred_masks = None
 
                 if is_detr:
-                    pred_masks = dec_masks[-1][si]  # Lấy trực tiếp từ dec_masks
-                elif nm is not None and protos is not None:  # YOLO Segmentation
+                    pred_masks = dec_masks[-1][si]
+                elif nm is not None and protos is not None:
                     pred_masks = process_mask(protos[si], mask_coeffs[si], pred[:, :4], shape=im[si].shape[1:])
 
                 if nl:
@@ -354,7 +356,8 @@ def run(
             json.dump(jdict, f)
 
     mp_bbox, mr_bbox, map50_bbox, map_bbox, mp_mask, mr_mask, map50_mask, map_mask = metrics.mean_results()
-    return (*metrics.mean_results(), *(mloss.cpu() / len(dataloader)).tolist()), metrics.get_maps(nc), t
+    maps = metrics.get_maps(nc)
+    return (mp_bbox, mr_bbox, map50_bbox, map_bbox, mp_mask, mr_mask, map50_mask, map_mask, *(mloss.cpu() / len(dataloader)).tolist()), maps, t
 
 def parse_opt():
     parser = argparse.ArgumentParser()
