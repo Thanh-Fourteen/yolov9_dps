@@ -10,7 +10,7 @@ import torch
 from tqdm import tqdm
 
 FILE = Path(__file__).resolve()
-ROOT = FILE.parents[1]  # YOLO root directory
+ROOT = FILE.parents[0]  # YOLO root directory
 if str(ROOT) not in sys.path:
     sys.path.append(str(ROOT))  # add ROOT to PATH
 ROOT = Path(os.path.relpath(ROOT, Path.cwd()))  # relative
@@ -18,18 +18,61 @@ ROOT = Path(os.path.relpath(ROOT, Path.cwd()))  # relative
 import torch.nn.functional as F
 
 from models.common import DetectMultiBackend
-from models.yolo import SegmentationModel
 from utils.callbacks import Callbacks
 from utils.general import (LOGGER, NUM_THREADS, TQDM_BAR_FORMAT, Profile, check_dataset, check_img_size,
-                           check_requirements, check_yaml, coco80_to_coco91_class, colorstr, increment_path,
-                           non_max_suppression, print_args, scale_boxes, xywh2xyxy, xyxy2xywh)
+                           check_yaml, coco80_to_coco91_class, colorstr, increment_path,
+                           print_args, scale_boxes, xywh2xyxy, xyxy2xywh)
 from utils.metrics import ConfusionMatrix, box_iou
 from utils.plots import output_to_target, plot_val_study
 from utils.segment.dataloaders import create_dataloader
-from utils.segment.general import mask_iou, process_mask, process_mask_upsample, scale_image
-from utils.segment.metrics import Metrics, ap_per_class_box_and_mask
+from utils.segment.general import mask_iou
+from utils.segment.metrics import Metrics, ap_per_class
 from utils.segment.plots import plot_images_and_masks
-from utils.torch_utils import de_parallel, select_device, smart_inference_mode
+from utils.torch_utils import select_device, smart_inference_mode
+
+def ap_per_class_box_and_mask(tp_b, tp_m, conf, pred_cls, target_cls, plot=False, save_dir='.', names=()):
+    """Tính toán chỉ số AP cho hộp giới hạn và mặt nạ."""
+    def compute_ap(tp, conf, pred_cls, target_cls):
+        i = np.argsort(-conf)
+        tp, conf, pred_cls = tp[i], conf[i], pred_cls[i]
+        unique_classes, nt = np.unique(target_cls, return_counts=True)
+        nc = unique_classes.shape[0]
+        ap = np.zeros((nc, tp.shape[1]))
+        for ci, c in enumerate(unique_classes):
+            i = pred_cls == c
+            n_l = nt[ci]
+            n_p = i.sum()
+            if n_p == 0 or n_l == 0:
+                continue
+            fpc = (1 - tp[i]).cumsum(0)
+            tpc = tp[i].cumsum(0)
+            recall = tpc / (n_l + 1e-16)
+            precision = tpc / (tpc + fpc + 1e-16)
+            for j in range(tp.shape[1]):
+                ap[ci, j] = compute_ap_score(recall[:, j], precision[:, j])
+        return ap
+
+    def compute_ap_score(recall, precision):
+        mrec = np.concatenate(([0.], recall, [1.]))
+        mpre = np.concatenate(([1.], precision, [0.]))
+        mpre = np.flip(np.maximum.accumulate(np.flip(mpre)))
+        x = np.linspace(0, 1, 101)
+        ap = np.trapz(np.interp(x, mrec, mpre), x)
+        return ap
+
+    # Tính AP cho hộp giới hạn
+    results_boxes = ap_per_class(tp_b, conf, pred_cls, target_cls, plot=plot, save_dir=save_dir, names=names, prefix="Box")
+    tp_b, fp_b, p_b, r_b, f1_b, ap_b, ap_class_b = results_boxes
+
+    # Tính AP cho mặt nạ
+    results_masks = ap_per_class(tp_m, conf, pred_cls, target_cls, plot=plot, save_dir=save_dir, names=names, prefix="Mask")
+    tp_m, fp_m, p_m, r_m, f1_m, ap_m, ap_class_m = results_masks
+
+    results = {
+        "boxes": {"p": p_b, "r": r_b, "ap": ap_b, "f1": f1_b, "ap_class": ap_class_b},
+        "masks": {"p": p_m, "r": r_m, "ap": ap_m, "f1": f1_m, "ap_class": ap_class_m}
+    }
+    return results
 
 
 def save_one_txt(predn, save_conf, shape, file):
@@ -64,8 +107,7 @@ def save_one_json(predn, jdict, path, class_map, pred_masks):
             'bbox': [round(x, 3) for x in b],
             'score': round(p[4], 5),
             'segmentation': rles[i]})
-
-
+    
 def process_batch(detections, labels, iouv, pred_masks=None, gt_masks=None, overlap=False, masks=False):
     """
     Return correct prediction matrix
@@ -84,7 +126,11 @@ def process_batch(detections, labels, iouv, pred_masks=None, gt_masks=None, over
         if gt_masks.shape[1:] != pred_masks.shape[1:]:
             gt_masks = F.interpolate(gt_masks[None], pred_masks.shape[1:], mode="bilinear", align_corners=False)[0]
             gt_masks = gt_masks.gt_(0.5)
-        iou = mask_iou(gt_masks.view(gt_masks.shape[0], -1), pred_masks.view(pred_masks.shape[0], -1))
+        gt = gt_masks.view(gt_masks.shape[0], -1)
+        pm = pred_masks.view(pred_masks.shape[0], -1)
+        if gt.dtype != pm.dtype:
+            pm = pm.to(gt.dtype)
+        iou = mask_iou(gt, pm)
     else:  # boxes
         iou = box_iou(labels[:, 1:], detections[:, :4])
 
@@ -102,6 +148,17 @@ def process_batch(detections, labels, iouv, pred_masks=None, gt_masks=None, over
             correct[matches[:, 1].astype(int), i] = True
     return torch.tensor(correct, dtype=torch.bool, device=iouv.device)
 
+def compute_segmentation_metrics(pred_masks, gt_masks, iou_threshold=0.5):
+    """Tính toán IoU và Dice Score cho mặt nạ phân đoạn."""
+    pred_masks = (pred_masks > 0.5).float()  # Ngưỡng hóa mặt nạ dự đoán
+    intersection = (pred_masks * gt_masks).sum(dim=(-2, -1))  # Giao giữa dự đoán và nhãn
+    union = pred_masks.sum(dim=(-2, -1)) + gt_masks.sum(dim=(-2, -1)) - intersection  # Hợp
+    iou = intersection / (union + 1e-6)  # IoU
+    dice = 2 * intersection / (pred_masks.sum(dim=(-2, -1)) + gt_masks.sum(dim=(-2, -1)) + 1e-6)  # Dice Score
+    
+    # Đếm số lượng mặt nạ đạt ngưỡng IoU
+    correct = (iou >= iou_threshold).float()
+    return iou.mean(), dice.mean(), correct.mean()
 
 @smart_inference_mode()
 def run(
@@ -109,17 +166,13 @@ def run(
         weights=None,  # model.pt path(s)
         batch_size=32,  # batch size
         imgsz=640,  # inference size (pixels)
-        conf_thres=0.001,  # confidence threshold
-        iou_thres=0.6,  # NMS IoU threshold
         max_det=300,  # maximum detections per image
         task='val',  # train, val, test, speed or study
         device='',  # cuda device, i.e. 0 or 0,1,2,3 or cpu
         workers=8,  # max dataloader workers (per RANK in DDP mode)
         single_cls=False,  # treat as single-class dataset
-        augment=False,  # augmented inference
         verbose=False,  # verbose output
         save_txt=False,  # save results to *.txt
-        save_hybrid=False,  # save label+prediction hybrid results to *.txt
         save_conf=False,  # save confidences in --save-txt labels
         save_json=False,  # save a COCO-JSON results file
         project=ROOT / 'runs/val-seg',  # save to project/name
@@ -136,61 +189,46 @@ def run(
         compute_loss=None,
         callbacks=Callbacks(),
 ):
-    if save_json:
-        check_requirements(['pycocotools'])
-        process = process_mask_upsample  # more accurate
-    else:
-        process = process_mask  # faster
-
+    
     # Initialize/load model and set device
     training = model is not None
-    if training:  # called by train.py
-        device, pt, jit, engine = next(model.parameters()).device, True, False, False  # get model device, PyTorch model
-        half &= device.type != 'cpu'  # half precision only supported on CUDA
+    if training:
+        device, pt, jit, engine = next(model.parameters()).device, True, False, False
+        half &= device.type != 'cpu'
         model.half() if half else model.float()
-        nm = de_parallel(model).model[-1].nm  # number of masks
-    else:  # called directly
+    else:
         device = select_device(device, batch_size=batch_size)
-
-        # Directories
-        save_dir = increment_path(Path(project) / name, exist_ok=exist_ok)  # increment run
-        (save_dir / 'labels' if save_txt else save_dir).mkdir(parents=True, exist_ok=True)  # make dir
-
-        # Load model
+        save_dir = increment_path(Path(project) / name, exist_ok=exist_ok)
+        (save_dir / 'labels' if save_txt else save_dir).mkdir(parents=True, exist_ok=True)
         model = DetectMultiBackend(weights, device=device, dnn=dnn, data=data, fp16=half)
         stride, pt, jit, engine = model.stride, model.pt, model.jit, model.engine
-        imgsz = check_img_size(imgsz, s=stride)  # check image size
-        half = model.fp16  # FP16 supported on limited backends with CUDA
-        nm = de_parallel(model).model.model[-1].nm if isinstance(model, SegmentationModel) else 32  # number of masks
+        imgsz = check_img_size(imgsz, s=stride)
+        half = model.fp16
         if engine:
             batch_size = model.batch_size
         else:
             device = model.device
             if not (pt or jit):
-                batch_size = 1  # export.py models default to batch-size 1
+                batch_size = 1
                 LOGGER.info(f'Forcing --batch-size 1 square inference (1,3,{imgsz},{imgsz}) for non-PyTorch models')
-
-        # Data
-        data = check_dataset(data)  # check
+        data = check_dataset(data)
 
     # Configure
     model.eval()
     cuda = device.type != 'cpu'
-    #is_coco = isinstance(data.get('val'), str) and data['val'].endswith(f'coco{os.sep}val2017.txt')  # COCO dataset
-    is_coco = isinstance(data.get('val'), str) and data['val'].endswith(f'val2017.txt')  # COCO dataset
-    nc = 1 if single_cls else int(data['nc'])  # number of classes
-    iouv = torch.linspace(0.5, 0.95, 10, device=device)  # iou vector for mAP@0.5:0.95
+    is_coco = isinstance(data.get('val'), str) and data['val'].endswith(f'val2017.txt')
+    nc = 1 if single_cls else int(data['nc'])
+    iouv = torch.linspace(0.5, 0.95, 10, device=device)
     niou = iouv.numel()
 
     # Dataloader
     if not training:
-        if pt and not single_cls:  # check --weights are trained on --data
+        if pt and not single_cls:
             ncm = model.model.nc
-            assert ncm == nc, f'{weights} ({ncm} classes) trained on different --data than what you passed ({nc} ' \
-                              f'classes). Pass correct combination of --weights and --data that are trained together.'
-        model.warmup(imgsz=(1 if pt else batch_size, 3, imgsz, imgsz))  # warmup
-        pad, rect = (0.0, False) if task == 'speed' else (0.5, pt)  # square inference for benchmarks
-        task = task if task in ('train', 'val', 'test') else 'val'  # path to train/val/test images
+            assert ncm == nc, f'{weights} ({ncm} classes) trained on different --data than what you passed ({nc} classes)'
+        model.warmup(imgsz=(1 if pt else batch_size, 3, imgsz, imgsz), detr=True)
+        pad, rect = (0.0, False) if task == 'speed' else (0.5, pt)
+        task = task if task in ('train', 'val', 'test') else 'val'
         dataloader = create_dataloader(data[task],
                                        imgsz,
                                        batch_size,
@@ -205,112 +243,128 @@ def run(
 
     seen = 0
     confusion_matrix = ConfusionMatrix(nc=nc)
-    names = model.names if hasattr(model, 'names') else model.module.names  # get class names
-    if isinstance(names, (list, tuple)):  # old format
+    names = model.names if hasattr(model, 'names') else model.module.names
+    if isinstance(names, (list, tuple)):
         names = dict(enumerate(names))
     class_map = coco80_to_coco91_class() if is_coco else list(range(1000))
-    s = ('%22s' + '%11s' * 10) % ('Class', 'Images', 'Instances', 'Box(P', "R", "mAP50", "mAP50-95)", "Mask(P", "R",
-                                  "mAP50", "mAP50-95)")
+    s = ('%22s' + '%11s' * 10) % ('Class', 'Images', 'Instances', 'Box(P', "R", "mAP50", "mAP50-95)", "Mask(P", "R", "mAP50", "mAP50-95)")
     dt = Profile(), Profile(), Profile()
-    metrics = Metrics()
-    loss = torch.zeros(4, device=device)
+    mloss = torch.zeros(5, device=device)
     jdict, stats = [], []
-    # callbacks.run('on_val_start')
-    pbar = tqdm(dataloader, desc=s, bar_format=TQDM_BAR_FORMAT)  # progress bar
+    callbacks.run('on_val_start')
+    pbar = tqdm(dataloader, desc=s, bar_format=TQDM_BAR_FORMAT)
     for batch_i, (im, targets, paths, shapes, masks) in enumerate(pbar):
-        # callbacks.run('on_val_batch_start')
+        callbacks.run('on_val_batch_start')
         with dt[0]:
             if cuda:
                 im = im.to(device, non_blocking=True)
                 targets = targets.to(device)
-                masks = masks.to(device)
-            masks = masks.float()
-            im = im.half() if half else im.float()  # uint8 to fp16/32
-            im /= 255  # 0 - 255 to 0.0 - 1.0
-            nb, _, height, width = im.shape  # batch size, channels, height, width
+            im = im.half() if half else im.float()
+            im /= 255
 
-        # Inference
+        bs = len(im)
+        batch_idx = targets[:, 0]
+        gt_groups = [(batch_idx == i).sum().item() for i in range(bs)]
+
+        _targets = {
+            "cls": targets[:, 1].to(device, dtype=torch.long),
+            "bboxes": targets[:, 2:].to(device),
+            "batch_idx": batch_idx.to(device, dtype=torch.long).view(-1),
+            "gt_groups": gt_groups,
+            "mask": masks,
+        }
+
         with dt[1]:
-            preds, train_out = model(im)# if compute_loss else (*model(im, augment=augment)[:2], None)
-            #train_out, preds, protos = p if len(p) == 3 else p[1]
-            #preds = p
-            #train_out = p[1][0] if len(p[1]) == 3 else p[0]
-            protos = train_out[-1]
-            #print(preds.shape)
-            #print(train_out[0].shape)
-            #print(train_out[1].shape)
-            #print(train_out[2].shape)
+            preds = model(im, batch=_targets, detr=True)
 
-        # Loss
-        if compute_loss:
-            loss += compute_loss(train_out, targets, masks)[1]  # box, obj, cls
+            if compute_loss:
+                dec_bboxes, dec_scores, dec_masks, enc_bboxes, enc_scores, enc_masks, dn_meta = preds[1]
+                if dn_meta is None:
+                    dn_bboxes, dn_scores, dn_masks = None, None, None
+                else:
+                    dn_bboxes, dec_bboxes = torch.split(dec_bboxes, dn_meta["dn_num_split"], dim=2)
+                    dn_scores, dec_scores = torch.split(dec_scores, dn_meta["dn_num_split"], dim=2)
+                    dn_masks, dec_masks = torch.split(dec_masks, dn_meta["dn_num_split"], dim=2)
+                    
+                dec_bboxes = torch.cat([enc_bboxes.unsqueeze(0), dec_bboxes])
+                dec_scores = torch.cat([enc_scores.unsqueeze(0), dec_scores])
+                dec_masks = torch.cat([enc_masks.unsqueeze(0), dec_masks])
 
-        # NMS
-        targets[:, 2:] *= torch.tensor((width, height, width, height), device=device)  # to pixels
-        lb = [targets[targets[:, 0] == i, 1:] for i in range(nb)] if save_hybrid else []  # for autolabelling
-        with dt[2]:
-            preds = non_max_suppression(preds,
-                                        conf_thres,
-                                        iou_thres,
-                                        labels=lb,
-                                        multi_label=True,
-                                        agnostic=single_cls,
-                                        max_det=max_det,
-                                        nm=nm)
+                loss = compute_loss((dec_bboxes, dec_scores, dec_masks), _targets,
+                                    dn_bboxes=dn_bboxes, dn_scores=dn_scores, dn_masks=dn_masks,
+                                    dn_meta=dn_meta)
+                loss, loss_items = sum(loss.values()), torch.as_tensor(
+                    [loss[k].detach() for k in ["loss_giou", "loss_class", "loss_bbox", "loss_mask", "loss_dice"]], device=device
+                )
+                mloss = (mloss * batch_i + loss_items) / (batch_i + 1)
 
-        # Metrics
-        plot_masks = []  # masks for plotting
-        for si, (pred, proto) in enumerate(zip(preds, protos)):
+        # Lọc hộp giới hạn
+        bs, _, nd = preds[0].shape
+        bboxes, scores = preds[0].split((4, nd - 4), dim=-1)
+        outputs = [torch.zeros((0, 6), device=bboxes.device)] * bs
+        topk_values, topk_indexes = torch.topk(scores.reshape(scores.shape[0], -1), max_det, dim=1)
+        topk_boxes = topk_indexes // scores.shape[2]
+        lbs = topk_indexes % scores.shape[2]
+        bboxes = torch.gather(bboxes, 1, topk_boxes.unsqueeze(-1).repeat(1, 1, 4))
+        scores = topk_values
+
+        for i, bbox in enumerate(bboxes):
+            bbox = xywh2xyxy(bbox)
+            score = scores[i]
+            cls = lbs[i]
+            pred = torch.cat([bbox, score[..., None], cls[..., None]], dim=-1)
+            pred = pred[score.argsort(descending=True)]
+            outputs[i] = pred
+        preds = outputs
+
+        # Đánh giá
+        for si, pred in enumerate(preds):
             labels = targets[targets[:, 0] == si, 1:]
-            nl, npr = labels.shape[0], pred.shape[0]  # number of labels, predictions
+            nl, npr = labels.shape[0], pred.shape[0]
             path, shape = Path(paths[si]), shapes[si][0]
-            correct_masks = torch.zeros(npr, niou, dtype=torch.bool, device=device)  # init
-            correct_bboxes = torch.zeros(npr, niou, dtype=torch.bool, device=device)  # init
+            correct_bboxes = torch.zeros(npr, niou, dtype=torch.bool, device=device)
+            correct_masks = torch.zeros(npr, niou, dtype=torch.bool, device=device)
             seen += 1
 
             if npr == 0:
                 if nl:
-                    stats.append((correct_masks, correct_bboxes, *torch.zeros((2, 0), device=device), labels[:, 0]))
+                    stats.append((correct_bboxes, correct_masks, *torch.zeros((2, 0), device=device), labels[:, 0]))
                     if plots:
                         confusion_matrix.process_batch(detections=None, labels=labels[:, 0])
                 continue
 
-            # Masks
-            midx = [si] if overlap else targets[:, 0] == si
-            gt_masks = masks[midx]
-            pred_masks = process(proto, pred[:, 6:], pred[:, :4], shape=im[si].shape[1:])
-
-            # Predictions
             if single_cls:
                 pred[:, 5] = 0
             predn = pred.clone()
-            scale_boxes(im[si].shape[1:], predn[:, :4], shape, shapes[si][1])  # native-space pred
+            scale_boxes(im[si].shape[1:], predn[:, :4], shape, shapes[si][1])
 
-            # Evaluate
+            # Đánh giá phát hiện đối tượng và phân đoạn
             if nl:
-                tbox = xywh2xyxy(labels[:, 1:5])  # target boxes
-                scale_boxes(im[si].shape[1:], tbox, shape, shapes[si][1])  # native-space labels
-                labelsn = torch.cat((labels[:, 0:1], tbox), 1)  # native-space labels
+                tbox = xywh2xyxy(labels[:, 1:5]) * torch.tensor(im[si].shape[1:], device=device)[[1, 0, 1, 0]]
+                scale_boxes(im[si].shape[1:], tbox, shape, shapes[si][1])
+                labelsn = torch.cat((labels[:, 0:1], tbox), 1)
+                
+                # Đánh giá hộp giới hạn
                 correct_bboxes = process_batch(predn, labelsn, iouv)
-                correct_masks = process_batch(predn, labelsn, iouv, pred_masks, gt_masks, overlap=overlap, masks=True)
+                
+                # Đánh giá mặt nạ
+                gt_mask = _targets["mask"][si]
+                if gt_mask.numel() > 0:
+                    pred_masks = dec_masks[-1, si]  # Tầng cuối của dec_masks
+                    topk_pred_masks = pred_masks[topk_boxes[si]]
+                    correct_masks = process_batch(predn, labelsn, iouv, topk_pred_masks, gt_mask, masks=True)
                 if plots:
                     confusion_matrix.process_batch(predn, labelsn)
-            stats.append((correct_masks, correct_bboxes, pred[:, 4], pred[:, 5], labels[:, 0]))  # (conf, pcls, tcls)
+            
+            stats.append((correct_bboxes, correct_masks, pred[:, 4], pred[:, 5], labels[:, 0]))
 
-            pred_masks = torch.as_tensor(pred_masks, dtype=torch.uint8)
-            if plots and batch_i < 3:
-                plot_masks.append(pred_masks[:15].cpu())  # filter top 15 to plot
-
-            # Save/log
             if save_txt:
                 save_one_txt(predn, save_conf, shape, file=save_dir / 'labels' / f'{path.stem}.txt')
             if save_json:
-                pred_masks = scale_image(im[si].shape[1:],
-                                         pred_masks.permute(1, 2, 0).contiguous().cpu().numpy(), shape, shapes[si][1])
-                save_one_json(predn, jdict, path, class_map, pred_masks)  # append to COCO-JSON dictionary
+                save_one_json(predn, jdict, path, class_map)
+
             # callbacks.run('on_val_image_end', pred, predn, path, names, im[si])
 
-        # Plot images
         if plots and batch_i < 3:
             if len(plot_masks):
                 plot_masks = torch.cat(plot_masks, dim=0)
@@ -318,83 +372,81 @@ def run(
             plot_images_and_masks(im, output_to_target(preds, max_det=15), plot_masks, paths,
                                   save_dir / f'val_batch{batch_i}_pred.jpg', names)  # pred
 
-        # callbacks.run('on_val_batch_end')
+        callbacks.run('on_val_batch_end', batch_i, im, targets, paths, shapes, preds)
 
-    # Compute metrics
-    stats = [torch.cat(x, 0).cpu().numpy() for x in zip(*stats)]  # to numpy
+    # Tính toán chỉ số
+    stats = [torch.cat(x, 0).cpu().numpy() for x in zip(*stats)]
+    metrics = Metrics()
     if len(stats) and stats[0].any():
         results = ap_per_class_box_and_mask(*stats, plot=plots, save_dir=save_dir, names=names)
         metrics.update(results)
-    nt = np.bincount(stats[4].astype(int), minlength=nc)  # number of targets per class
+    nt = np.bincount(stats[4].astype(int), minlength=nc)
 
-    # Print results
-    pf = '%22s' + '%11i' * 2 + '%11.3g' * 8  # print format
-    LOGGER.info(pf % ("all", seen, nt.sum(), *metrics.mean_results()))
+    # In kết quả
+    pf = '%22s' + '%11i' * 2 + '%11.3g' * 8
+    LOGGER.info(pf % ('all', seen, nt.sum(), *metrics.mean_results()))
+    LOGGER.info(('%22s' + '%11.3g' * 5) % ('val/loss', *(mloss.cpu() / len(dataloader)).tolist()))
     if nt.sum() == 0:
         LOGGER.warning(f'WARNING ⚠️ no labels found in {task} set, can not compute metrics without labels')
 
-    # Print results per class
-    if (verbose or (nc < 50 and not training)) and nc > 1 and len(stats):
+    if verbose or (nc < 50 and not training) and nc > 1 and len(stats):
         for i, c in enumerate(metrics.ap_class_index):
             LOGGER.info(pf % (names[c], seen, nt[c], *metrics.class_result(i)))
 
-    # Print speeds
-    t = tuple(x.t / seen * 1E3 for x in dt)  # speeds per image
+    t = tuple(x.t / seen * 1E3 for x in dt)
     if not training:
         shape = (batch_size, 3, imgsz, imgsz)
         LOGGER.info(f'Speed: %.1fms pre-process, %.1fms inference, %.1fms NMS per image at shape {shape}' % t)
 
-    # Plots
     if plots:
         confusion_matrix.plot(save_dir=save_dir, names=list(names.values()))
-    # callbacks.run('on_val_end')
+    callbacks.run('on_val_end')
 
     mp_bbox, mr_bbox, map50_bbox, map_bbox, mp_mask, mr_mask, map50_mask, map_mask = metrics.mean_results()
 
-    # Save JSON
     if save_json and len(jdict):
-        w = Path(weights[0] if isinstance(weights, list) else weights).stem if weights is not None else ''  # weights
-        anno_json = str(Path(data.get('path', '../coco')) / 'annotations/instances_val2017.json')  # annotations json
-        pred_json = str(save_dir / f"{w}_predictions.json")  # predictions json
+        w = Path(weights[0] if isinstance(weights, list) else weights).stem if weights is not None else ''
+        anno_json = str(Path(data.get('path', '../coco')) / 'annotations/instances_val2017.json')
+        pred_json = str(save_dir / f"{w}_predictions.json")
         LOGGER.info(f'\nEvaluating pycocotools mAP... saving {pred_json}...')
         with open(pred_json, 'w') as f:
             json.dump(jdict, f)
 
-        try:  # https://github.com/cocodataset/cocoapi/blob/master/PythonAPI/pycocoEvalDemo.ipynb
+        try:
             from pycocotools.coco import COCO
             from pycocotools.cocoeval import COCOeval
 
-            anno = COCO(anno_json)  # init annotations api
-            pred = anno.loadRes(pred_json)  # init predictions api
+            anno = COCO(anno_json)
+            pred = anno.loadRes(pred_json)
             results = []
-            for eval in COCOeval(anno, pred, 'bbox'), COCOeval(anno, pred, 'segm'):
+            for eval in (COCOeval(anno, pred, 'bbox'), COCOeval(anno, pred, 'segm')):
                 if is_coco:
-                    eval.params.imgIds = [int(Path(x).stem) for x in dataloader.dataset.im_files]  # img ID to evaluate
+                    eval.params.imgIds = [int(Path(x).stem) for x in dataloader.dataset.im_files]
                 eval.evaluate()
                 eval.accumulate()
                 eval.summarize()
-                results.extend(eval.stats[:2])  # update results (mAP@0.5:0.95, mAP@0.5)
+                results.extend(eval.stats[:2])
             map_bbox, map50_bbox, map_mask, map50_mask = results
         except Exception as e:
             LOGGER.info(f'pycocotools unable to run: {e}')
 
-    # Return results
-    model.float()  # for training
+    model.float()
     if not training:
         s = f"\n{len(list(save_dir.glob('labels/*.txt')))} labels saved to {save_dir / 'labels'}" if save_txt else ''
         LOGGER.info(f"Results saved to {colorstr('bold', save_dir)}{s}")
-    final_metric = mp_bbox, mr_bbox, map50_bbox, map_bbox, mp_mask, mr_mask, map50_mask, map_mask
-    return (*final_metric, *(loss.cpu() / len(dataloader)).tolist()), metrics.get_maps(nc), t
+    final_metric = (mp_bbox, mr_bbox, map50_bbox, map_bbox, mp_mask, mr_mask, map50_mask, map_mask,
+                    *(mloss.cpu() / len(dataloader)).tolist())
+    return final_metric, metrics.get_maps(nc), t
 
 
 def parse_opt():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--data', type=str, default=ROOT / 'data/coco128-seg.yaml', help='dataset.yaml path')
-    parser.add_argument('--weights', nargs='+', type=str, default=ROOT / 'yolo-seg.pt', help='model path(s)')
+    parser.add_argument('--data', type=str, default=ROOT / 'data/coco.yaml', help='dataset.yaml path')
+    parser.add_argument('--weights', nargs='+', type=str, default=ROOT / 'yolo.pt', help='model path(s)')
     parser.add_argument('--batch-size', type=int, default=32, help='batch size')
     parser.add_argument('--imgsz', '--img', '--img-size', type=int, default=640, help='inference size (pixels)')
     parser.add_argument('--conf-thres', type=float, default=0.001, help='confidence threshold')
-    parser.add_argument('--iou-thres', type=float, default=0.6, help='NMS IoU threshold')
+    parser.add_argument('--iou-thres', type=float, default=0.7, help='NMS IoU threshold')
     parser.add_argument('--max-det', type=int, default=300, help='maximum detections per image')
     parser.add_argument('--task', default='val', help='train, val, test, speed or study')
     parser.add_argument('--device', default='', help='cuda device, i.e. 0 or 0,1,2,3 or cpu')
@@ -406,27 +458,28 @@ def parse_opt():
     parser.add_argument('--save-hybrid', action='store_true', help='save label+prediction hybrid results to *.txt')
     parser.add_argument('--save-conf', action='store_true', help='save confidences in --save-txt labels')
     parser.add_argument('--save-json', action='store_true', help='save a COCO-JSON results file')
-    parser.add_argument('--project', default=ROOT / 'runs/val-seg', help='save results to project/name')
+    parser.add_argument('--project', default=ROOT / 'runs/val', help='save to project/name')
     parser.add_argument('--name', default='exp', help='save to project/name')
     parser.add_argument('--exist-ok', action='store_true', help='existing project/name ok, do not increment')
     parser.add_argument('--half', action='store_true', help='use FP16 half-precision inference')
     parser.add_argument('--dnn', action='store_true', help='use OpenCV DNN for ONNX inference')
+    parser.add_argument('--min-items', type=int, default=0, help='Experimental')
     opt = parser.parse_args()
     opt.data = check_yaml(opt.data)  # check YAML
-    # opt.save_json |= opt.data.endswith('coco.yaml')
+    opt.save_json |= opt.data.endswith('coco.yaml')
     opt.save_txt |= opt.save_hybrid
     print_args(vars(opt))
     return opt
 
 
 def main(opt):
-    #check_requirements(requirements=ROOT / 'requirements.txt', exclude=('tensorboard', 'thop'))
+    #check_requirements(exclude=('tensorboard', 'thop'))
 
     if opt.task in ('train', 'val', 'test'):  # run normally
         if opt.conf_thres > 0.001:  # https://github.com/ultralytics/yolov5/issues/1466
-            LOGGER.warning(f'WARNING ⚠️ confidence threshold {opt.conf_thres} > 0.001 produces invalid results')
+            LOGGER.info(f'WARNING ⚠️ confidence threshold {opt.conf_thres} > 0.001 produces invalid results')
         if opt.save_hybrid:
-            LOGGER.warning('WARNING ⚠️ --save-hybrid returns high mAP from hybrid labels, not from predictions alone')
+            LOGGER.info('WARNING ⚠️ --save-hybrid will return high mAP from hybrid labels, not from predictions alone')
         run(**vars(opt))
 
     else:
