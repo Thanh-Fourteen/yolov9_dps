@@ -24,7 +24,8 @@ from utils.general import (LOGGER, NUM_THREADS, TQDM_BAR_FORMAT, Profile, check_
                            check_requirements, check_yaml, coco80_to_coco91_class, colorstr, increment_path,
                            non_max_suppression, print_args, scale_boxes, xywh2xyxy, xyxy2xywh)
 from utils.metrics import ConfusionMatrix, box_iou
-from utils.plots import output_to_target, plot_images, plot_images_and_masks
+from utils.plots import output_to_target, plot_images
+from utils.segment.plots import plot_images_and_masks
 from utils.segment.dataloaders import create_dataloader as create_segment_dataloader
 from utils.segment.general import mask_iou, process_mask, process_mask_upsample, scale_image
 from utils.segment.metrics import Metrics, ap_per_class_box_and_mask
