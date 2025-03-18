@@ -47,8 +47,7 @@ def save_one_json(predn, jdict, path, class_map, pred_masks=None):
         return rle
 
     image_id = int(path.stem) if path.stem.isnumeric() else path.stem
-    box = xyxy2xywh(predn[:, :4])
-    box[:, :2] -= box[:, 2:] / 2
+    box = xywh2xyxy(predn[:, :4])
     entry = {
         'image_id': image_id,
         'category_id': class_map[int(predn[0, 5])],
@@ -137,11 +136,13 @@ def run(
     is_detr=True
 ):
     training = model is not None
+    nm = None  # Khởi tạo nm là None, chỉ dùng khi cần cho YOLO
     if training:
         device = next(model.parameters()).device
         half &= device.type != 'cpu'
         model.half() if half else model.float()
-        nm = de_parallel(model).model[-1].nm if isinstance(model, SegmentationModel) else 32
+        if not is_detr and isinstance(model, SegmentationModel):
+            nm = de_parallel(model).model[-1].nm  # Lấy nm chỉ khi là YOLO Segmentation
     else:
         device = select_device(device, batch_size=batch_size)
         save_dir = increment_path(Path(project) / name, exist_ok=exist_ok)
@@ -150,7 +151,8 @@ def run(
         stride, pt = model.stride, model.pt
         imgsz = check_img_size(imgsz, s=stride)
         half = model.fp16
-        nm = de_parallel(model).model.model[-1].nm if isinstance(model, SegmentationModel) else 32
+        if not is_detr and isinstance(model, SegmentationModel):
+            nm = de_parallel(model).model.model[-1].nm  # Lấy nm chỉ khi là YOLO Segmentation
 
     model.eval()
     cuda = device.type != 'cpu'
@@ -233,23 +235,33 @@ def run(
                          for bbox, score, cls in zip(bboxes, scores, lbs)]
             else:  # YOLO
                 pred_bboxes, train_out = preds[0], preds[1]
-                protos = train_out[-1]
+                protos = train_out[-1] if len(train_out) > 1 else None
                 if compute_loss:
                     loss_items = compute_loss(train_out, targets, masks)[1]
                     mloss = (mloss * batch_i + loss_items) / (batch_i + 1)
 
                 bs, _, nd = pred_bboxes.shape
-                bboxes, scores_and_masks = pred_bboxes.split((4, nd - 4), dim=-1)
-                scores = scores_and_masks[:, :, :-nm]  # nm: number of masks
-                mask_coeffs = scores_and_masks[:, :, -nm:]
-                topk_values, topk_indexes = torch.topk(scores.reshape(bs, -1), max_det, dim=1)
-                topk_boxes = topk_indexes // scores.shape[2]
-                lbs = topk_indexes % scores.shape[2]
-                bboxes = torch.gather(bboxes, 1, topk_boxes.unsqueeze(-1).repeat(1, 1, 4))
-                scores = topk_values
-                mask_coeffs = torch.gather(mask_coeffs, 1, topk_boxes.unsqueeze(-1).repeat(1, 1, nm))
-                preds = [torch.cat([xywh2xyxy(bbox), score[..., None], cls[..., None]], dim=-1) 
-                         for bbox, score, cls in zip(bboxes, scores, lbs)]
+                if nm is not None:  # Chỉ áp dụng nếu là YOLO Segmentation
+                    bboxes, scores_and_masks = pred_bboxes.split((4, nd - 4), dim=-1)
+                    scores = scores_and_masks[:, :, :-nm]
+                    mask_coeffs = scores_and_masks[:, :, -nm:]
+                    topk_values, topk_indexes = torch.topk(scores.reshape(bs, -1), max_det, dim=1)
+                    topk_boxes = topk_indexes // scores.shape[2]
+                    lbs = topk_indexes % scores.shape[2]
+                    bboxes = torch.gather(bboxes, 1, topk_boxes.unsqueeze(-1).repeat(1, 1, 4))
+                    scores = topk_values
+                    mask_coeffs = torch.gather(mask_coeffs, 1, topk_boxes.unsqueeze(-1).repeat(1, 1, nm))
+                    preds = [torch.cat([xywh2xyxy(bbox), score[..., None], cls[..., None]], dim=-1) 
+                             for bbox, score, cls in zip(bboxes, scores, lbs)]
+                else:  # YOLO Detection (không có segmentation)
+                    bboxes, scores = pred_bboxes.split((4, nd - 4), dim=-1)
+                    topk_values, topk_indexes = torch.topk(scores.reshape(bs, -1), max_det, dim=1)
+                    topk_boxes = topk_indexes // scores.shape[2]
+                    lbs = topk_indexes % scores.shape[2]
+                    bboxes = torch.gather(bboxes, 1, topk_boxes.unsqueeze(-1).repeat(1, 1, 4))
+                    scores = topk_values
+                    preds = [torch.cat([xywh2xyxy(bbox), score[..., None], cls[..., None]], dim=-1) 
+                             for bbox, score, cls in zip(bboxes, scores, lbs)]
 
         with dt[2]:
             plot_masks = []
@@ -258,7 +270,7 @@ def run(
                 nl, npr = labels.shape[0], pred.shape[0]
                 path, shape = Path(paths[si]), shapes[si][0]
                 correct_bboxes = torch.zeros(npr, niou, dtype=torch.bool, device=device)
-                correct_masks = torch.zeros(npr, niou, dtype=torch.bool, device=device) if protos is not None or is_detr else None
+                correct_masks = torch.zeros(npr, niou, dtype=torch.bool, device=device) if (is_detr or (not is_detr and nm is not None)) else None
                 seen += 1
 
                 if npr == 0:
@@ -274,8 +286,8 @@ def run(
                 pred_masks = None
 
                 if is_detr:
-                    pred_masks = pred_masks[si]
-                elif protos is not None:
+                    pred_masks = dec_masks[-1][si]  # Lấy trực tiếp từ dec_masks
+                elif nm is not None and protos is not None:  # YOLO Segmentation
                     pred_masks = process_mask(protos[si], mask_coeffs[si], pred[:, :4], shape=im[si].shape[1:])
 
                 if nl:
