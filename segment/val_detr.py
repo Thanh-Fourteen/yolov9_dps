@@ -138,20 +138,34 @@ def run(
     is_detr=True  # Thêm tham số để chọn giữa YOLO và DETR
 ):
     training = model is not None
-    if training:
-        device = next(model.parameters()).device
-        half &= device.type != 'cpu'
+    if training:  # called by train.py
+        device, pt, jit, engine = next(model.parameters()).device, True, False, False  # get model device, PyTorch model
+        half &= device.type != 'cpu'  # half precision only supported on CUDA
         model.half() if half else model.float()
-        nm = de_parallel(model).model[-1].nm if isinstance(model, SegmentationModel) else 32
-    else:
+        nm = de_parallel(model).model[-1].nm  # number of masks
+    else:  # called directly
         device = select_device(device, batch_size=batch_size)
-        save_dir = increment_path(Path(project) / name, exist_ok=exist_ok)
-        (save_dir / 'labels' if save_txt else save_dir).mkdir(parents=True, exist_ok=True)
+
+        # Directories
+        save_dir = increment_path(Path(project) / name, exist_ok=exist_ok)  # increment run
+        (save_dir / 'labels' if save_txt else save_dir).mkdir(parents=True, exist_ok=True)  # make dir
+
+        # Load model
         model = DetectMultiBackend(weights, device=device, dnn=dnn, data=data, fp16=half)
-        stride, pt = model.stride, model.pt
-        imgsz = check_img_size(imgsz, s=stride)
-        half = model.fp16
-        nm = de_parallel(model).model.model[-1].nm if isinstance(model, SegmentationModel) else 32
+        stride, pt, jit, engine = model.stride, model.pt, model.jit, model.engine
+        imgsz = check_img_size(imgsz, s=stride)  # check image size
+        half = model.fp16  # FP16 supported on limited backends with CUDA
+        nm = de_parallel(model).model.model[-1].nm if isinstance(model, SegmentationModel) else 32  # number of masks
+        if engine:
+            batch_size = model.batch_size
+        else:
+            device = model.device
+            if not (pt or jit):
+                batch_size = 1  # export.py models default to batch-size 1
+                LOGGER.info(f'Forcing --batch-size 1 square inference (1,3,{imgsz},{imgsz}) for non-PyTorch models')
+
+        # Data
+        data = check_dataset(data)  # check
 
     model.eval()
     cuda = device.type != 'cpu'
@@ -160,12 +174,27 @@ def run(
     iouv = torch.linspace(0.5, 0.95, 10, device=device)
     niou = iouv.numel()
 
+    # Dataloader
     if not training:
-        model.warmup(imgsz=(1 if pt else batch_size, 3, imgsz, imgsz), detr=is_detr)
-        dataloader = create_segment_dataloader(data[task], imgsz, batch_size, stride, single_cls,
-                                               pad=0.5, rect=pt, workers=workers, prefix=colorstr(f'{task}: '),
-                                               overlap_mask=overlap, mask_downsample_ratio=mask_downsample_ratio)[0]
-
+        if pt and not single_cls:  # check --weights are trained on --data
+            ncm = model.model.nc
+            assert ncm == nc, f'{weights} ({ncm} classes) trained on different --data than what you passed ({nc} ' \
+                              f'classes). Pass correct combination of --weights and --data that are trained together.'
+        model.warmup(imgsz=(1 if pt else batch_size, 3, imgsz, imgsz))  # warmup
+        pad, rect = (0.0, False) if task == 'speed' else (0.5, pt)  # square inference for benchmarks
+        task = task if task in ('train', 'val', 'test') else 'val'  # path to train/val/test images
+        dataloader = create_dataloader(data[task],
+                                       imgsz,
+                                       batch_size,
+                                       stride,
+                                       single_cls,
+                                       pad=pad,
+                                       rect=rect,
+                                       workers=workers,
+                                       prefix=colorstr(f'{task}: '),
+                                       overlap_mask=overlap,
+                                       mask_downsample_ratio=mask_downsample_ratio)[0]
+        
     seen = 0
     confusion_matrix = ConfusionMatrix(nc=nc)
     names = model.names if hasattr(model, 'names') else model.module.names
@@ -179,7 +208,6 @@ def run(
     jdict, stats = [], []
     pbar = tqdm(dataloader, desc=s, bar_format=TQDM_BAR_FORMAT)
 
-    matcher = HungarianMatcher() if is_detr else None
     compute_loss = RTDETRSegmentLoss(nc=nc) if is_detr and compute_loss is None else compute_loss
 
     for batch_i, (im, targets, paths, shapes, masks) in enumerate(pbar):
