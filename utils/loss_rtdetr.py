@@ -556,10 +556,15 @@ class DETRLoss(nn.Module):
 
         # Xử lý gt_assigned (ground truth)
         if isinstance(gt_bboxes, torch.Tensor):  # Trường hợp bounding box
+            assert gt_groups is not None, "gt_groups must be provided for bounding box assignment"
+            gt_groups_cumsum = torch.as_tensor([0, *gt_groups[:-1]]).cumsum_(0)
             gt_assigned = torch.cat(
                 [
-                    t[j] if len(j) > 0 else torch.zeros((0,) + t.shape[1:], device=self.device)
-                    for t, (_, j) in zip(gt_bboxes.split(gt_groups, dim=0), match_indices)
+                    (
+                        t[(j - gt_groups_cumsum[k]).clamp(max=t.shape[0] - 1)] if len(j) > 0 
+                        else torch.zeros((0,) + t.shape[1:], device=self.device)
+                    )
+                    for t, (_, j), k in zip(gt_bboxes.split(gt_groups, dim=0), match_indices, range(len(gt_groups)))
                 ]
             )
         else:  # Trường hợp mask (gt_bboxes là danh sách các tensor)
