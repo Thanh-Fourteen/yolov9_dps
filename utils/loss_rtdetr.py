@@ -557,7 +557,7 @@ class DETRLoss(nn.Module):
         # Xử lý gt_assigned (ground truth)
         if isinstance(gt_bboxes, torch.Tensor):  # Trường hợp bounding box
             assert gt_groups is not None, "gt_groups must be provided for bounding box assignment"
-            gt_groups_cumsum = torch.as_tensor([0, *gt_groups[:-1]]).cumsum_(0)
+            gt_groups_cumsum = torch.as_tensor([0, *gt_groups[:-1]], device=self.device).cumsum_(0)
             gt_assigned = torch.cat(
                 [
                     (
@@ -569,12 +569,14 @@ class DETRLoss(nn.Module):
             )
         else:  # Trường hợp mask (gt_bboxes là danh sách các tensor)
             assert gt_groups is not None, "gt_groups must be provided for mask assignment"
-            gt_groups_cumsum = torch.as_tensor([0, *gt_groups[:-1]]).cumsum_(0)
+            gt_groups_cumsum = torch.as_tensor([0, *gt_groups[:-1]], device=self.device).cumsum_(0)
+            # Chuyển tất cả tensor trong gt_bboxes sang self.device
+            gt_bboxes = [t.to(self.device) for t in gt_bboxes]
             gt_assigned = torch.cat(
                 [
                     (
                         t[(j - gt_groups_cumsum[k]).clamp(max=t.shape[0] - 1)] if len(j) > 0 
-                        else torch.zeros((0,) + t.shape[1:], device=t.device)
+                        else torch.zeros((0,) + t.shape[1:], device=self.device)
                     )
                     for t, (_, j), k in zip(gt_bboxes, match_indices, range(len(gt_bboxes)))
                     if len(t) > 0  # Bỏ qua tensor rỗng
