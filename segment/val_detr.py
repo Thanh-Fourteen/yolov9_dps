@@ -37,10 +37,8 @@ def mask_iou(mask1, mask2, eps=1e-7):
     """Tính IoU giữa hai tập hợp mặt nạ nhị phân."""
     mask1 = mask1.float()
     mask2 = mask2.float()
-    intersection = torch.matmul(mask1, mask2.t()).clamp(min=0)
-    area1 = mask1.sum(dim=1, keepdim=True)
-    area2 = mask2.sum(dim=1, keepdim=False)
-    union = area1 + area2[None, :] - intersection
+    intersection = (mask1 * mask2).sum(dim=(1, 2)).clamp(min=0)
+    union = mask1.sum(dim=(1, 2)) + mask2.sum(dim=(1, 2)) - intersection
     iou = intersection / (union + eps)
     return iou.clamp(min=0, max=1)
 
@@ -117,33 +115,27 @@ def save_one_json(predn, jdict, path, class_map, pred_masks):
             'segmentation': rles[i]})
 
 def process_batch(detections, labels, iouv, pred_masks=None, gt_masks=None, overlap=False, masks=False):
-    """Trả về ma trận dự đoán đúng."""
-    if masks and pred_masks is not None and gt_masks is not None:
-        if overlap:
-            nl = len(labels)
-            index = torch.arange(nl, device=gt_masks.device).view(nl, 1, 1) + 1
-            gt_masks = gt_masks.repeat(nl, 1, 1)
-            gt_masks = torch.where(gt_masks == index, 1.0, 0.0)
-
-        # Nội suy pred_masks lên kích thước của gt_masks
-        if pred_masks.dim() == 3:  # [N, H, W] -> [N, 1, H, W]
-            pred_masks = pred_masks.unsqueeze(1)
-        if gt_masks.shape[1:] != pred_masks.shape[2:]:
-            pred_masks = F.interpolate(pred_masks, size=gt_masks.shape[1:], mode="bilinear", align_corners=False)
-        pred_masks = pred_masks.squeeze(1)  # [N, 1, H, W] -> [N, H, W]
-        
-        pred_masks = (pred_masks > 0.5).float()
-        gt_masks = gt_masks.gt_(0.5)
-        
-        gt = gt_masks.view(gt_masks.shape[0], -1)
-        pm = pred_masks.view(pred_masks.shape[0], -1)
-        iou = mask_iou(pm, gt)  # Chuyển pm thành hàng đầu tiên để khớp với labels
-    else:
-        iou = box_iou(labels[:, 1:], detections[:, :4])
-
+    """Trả về ma trận dự đoán đúng cho cả bbox và mask."""
     correct = np.zeros((detections.shape[0], iouv.shape[0])).astype(bool)
+    correct_masks = np.zeros((detections.shape[0], iouv.shape[0])).astype(bool)
+
+    # Tính IoU cho bbox
+    iou = box_iou(labels[:, 1:], detections[:, :4])
     correct_class = labels[:, 0:1] == detections[:, 5]
+
+    # Tính IoU cho mask nếu có
+    if masks and pred_masks is not None and gt_masks is not None:
+        if pred_masks.shape[1:] != gt_masks.shape[1:]:
+            pred_masks = F.interpolate(pred_masks.unsqueeze(0), size=gt_masks.shape[1:], mode="bilinear", align_corners=False).squeeze(0)
+        pred_masks = (pred_masks > 0.5).float()
+        gt_masks = gt_masks.float()
+
+        # Tính IoU mask cho từng cặp pred và gt
+        iou_masks = mask_iou(pred_masks, gt_masks)
+
+    # Xác định dự đoán đúng cho bbox và mask
     for i in range(len(iouv)):
+        # Bbox
         x = torch.where((iou >= iouv[i]) & correct_class)
         if x[0].shape[0]:
             matches = torch.cat((torch.stack(x, 1), iou[x[0], x[1]][:, None]), 1).cpu().numpy()
@@ -152,7 +144,19 @@ def process_batch(detections, labels, iouv, pred_masks=None, gt_masks=None, over
                 matches = matches[np.unique(matches[:, 1], return_index=True)[1]]
                 matches = matches[np.unique(matches[:, 0], return_index=True)[1]]
             correct[matches[:, 1].astype(int), i] = True
-    return torch.tensor(correct, dtype=torch.bool, device=iouv.device)
+
+        # Mask
+        if masks and pred_masks is not None and gt_masks is not None:
+            x_m = torch.where((iou_masks >= iouv[i]) & correct_class.squeeze(-1))
+            if x_m[0].shape[0]:
+                matches_m = torch.cat((torch.stack(x_m, 1), iou_masks[x_m[0], x_m[1]][:, None]), 1).cpu().numpy()
+                if x_m[0].shape[0] > 1:
+                    matches_m = matches_m[matches_m[:, 2].argsort()[::-1]]
+                    matches_m = matches_m[np.unique(matches_m[:, 1], return_index=True)[1]]
+                    matches_m = matches_m[np.unique(matches_m[:, 0], return_index=True)[1]]
+                correct_masks[matches_m[:, 1].astype(int), i] = True
+
+    return torch.tensor(correct, dtype=torch.bool, device=iouv.device), torch.tensor(correct_masks, dtype=torch.bool, device=iouv.device)
 
 @smart_inference_mode()
 def run(
@@ -293,22 +297,19 @@ def run(
         pred_masks = dec_masks[-1]  # [bs, num_queries, h, w]
         outputs = [torch.zeros((0, 6), device=bboxes.device)] * bs
 
-        # Tính số lượng dự đoán tối đa có thể chọn (tránh lỗi out of range)
         num_queries = scores.shape[1]
-        k = min(max_det, num_queries)  # Chọn k nhỏ nhất giữa max_det và num_queries
-
-        # Chọn top-k dựa trên scores
-        topk_values, topk_indexes = torch.topk(scores.max(dim=-1).values, k, dim=1)  # [bs, k]
-        topk_boxes = topk_indexes  # Chỉ số của top-k queries
-        topk_labels = scores.gather(2, topk_boxes.unsqueeze(-1).repeat(1, 1, scores.shape[-1])).argmax(dim=-1)  # [bs, k]
+        k = min(max_det, num_queries)
+        topk_values, topk_indexes = torch.topk(scores.max(dim=-1).values, k, dim=1)
+        topk_boxes = topk_indexes
+        topk_labels = scores.gather(2, topk_boxes.unsqueeze(-1).repeat(1, 1, scores.shape[-1])).argmax(dim=-1)
 
         for i in range(bs):
-            bbox = bboxes[i, topk_boxes[i]]  # [k, 4]
-            score = topk_values[i]  # [k]
-            cls = topk_labels[i]  # [k]
+            bbox = bboxes[i, topk_boxes[i]]
+            score = topk_values[i]
+            cls = topk_labels[i]
             bbox = xywh2xyxy(bbox)
             pred = torch.cat([bbox, score[..., None], cls[..., None]], dim=-1)
-            pred = pred[score.argsort(descending=True)]  # Sắp xếp theo score giảm dần
+            pred = pred[score.argsort(descending=True)]
             outputs[i] = pred
 
         # Đánh giá
@@ -337,16 +338,11 @@ def run(
                 scale_boxes(im[si].shape[1:], tbox, shape, shapes[si][1])
                 labelsn = torch.cat((labels[:, 0:1], tbox), 1)
                 
-                # Đánh giá bbox
-                correct_bboxes = process_batch(predn, labelsn, iouv)
+                # Đánh giá bbox và mask
+                gt_mask = _targets["mask"][targets[:, 0] == si]
+                topk_pred_masks = pred_masks[si, topk_boxes[si]]
+                correct_bboxes, correct_masks = process_batch(predn, labelsn, iouv, topk_pred_masks, gt_mask, overlap=overlap, masks=True)
                 
-                # Đánh giá mask
-                gt_mask = _targets["mask"][si]
-                if gt_mask.numel() > 0 and npr > 0:
-                    topk_pred_masks = pred_masks[si, topk_boxes[si]]  # [npr, h, w]
-                    if topk_pred_masks.shape[1:] != gt_mask.shape:
-                        topk_pred_masks = F.interpolate(topk_pred_masks.unsqueeze(0), size=gt_mask.shape, mode="bilinear", align_corners=False).squeeze(0)
-                    correct_masks = process_batch(predn, labelsn, iouv, topk_pred_masks, gt_mask, overlap=overlap, masks=True)
                 if plots:
                     confusion_matrix.process_batch(predn, labelsn)
             
