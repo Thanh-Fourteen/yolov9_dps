@@ -188,6 +188,12 @@ def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictio
         mask_downsample_ratio=mask_ratio,
         overlap_mask=overlap,
     )
+
+    train_iter = iter(train_loader)
+    batch = next(train_iter)
+    imgs, targets, paths, _, masks = batch
+    print(f"mask train shape: {masks.shape}")
+
     labels = np.concatenate(dataset.labels, 0)
     mlc = int(labels[:, 0].max())  # max label class
     assert mlc < nc, f'Label class {mlc} exceeds nc={nc} in {data}. Possible class labels are 0-{nc - 1}'
@@ -209,6 +215,13 @@ def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictio
                                        mask_downsample_ratio=mask_ratio,
                                        overlap_mask=overlap,
                                        prefix=colorstr('val: '))[0]
+        
+        val_iter = iter(val_loader)
+        batch = next(val_iter)
+        imgs, targets, paths, _, masks = batch
+        print(f"mask val shape: {masks.shape}")
+
+        exit()
 
         if not resume:
             #if not opt.noautoanchor:
