@@ -60,12 +60,12 @@ def save_one_json(predn, jdict, path, class_map, pred_masks=None):
             pred_masks = np.transpose(pred_masks, (2, 0, 1))
             with ThreadPool(NUM_THREADS) as pool:
                 rles = pool.map(single_encode, pred_masks)
-            entry['segmentation'] = rles[0]
+            entry['segmentation'] = rles[0] if rles else None
         jdict.append(entry)
 
 def process_batch(detections, labels, iouv, pred_masks=None, gt_masks=None, overlap=False):
-    correct_bboxes = np.zeros((detections.shape[0], iouv.shape[0])).astype(bool)
-    correct_masks = np.zeros((detections.shape[0], iouv.shape[0])).astype(bool) if pred_masks is not None else None
+    correct_bboxes = torch.zeros(detections.shape[0], iouv.shape[0], dtype=torch.bool, device=iouv.device)
+    correct_masks = torch.zeros(detections.shape[0], iouv.shape[0], dtype=torch.bool, device=iouv.device) if pred_masks is not None else None
     
     iou = box_iou(labels[:, 1:], detections[:, :4])
     correct_class = labels[:, 0:1] == detections[:, 5]
@@ -100,8 +100,7 @@ def process_batch(detections, labels, iouv, pred_masks=None, gt_masks=None, over
                     matches = matches[np.unique(matches[:, 0], return_index=True)[1]]
                 correct_masks[matches[:, 1].astype(int), i] = True
     
-    return (torch.tensor(correct_bboxes, dtype=torch.bool, device=iouv.device),
-            torch.tensor(correct_masks, dtype=torch.bool, device=iouv.device) if correct_masks is not None else None)
+    return correct_bboxes, correct_masks
 
 @smart_inference_mode()
 def run(
@@ -226,8 +225,8 @@ def run(
                     loss_items = torch.tensor([loss_dict[k] for k in ["loss_giou", "loss_class", "loss_bbox", "loss_mask", "loss_dice"]], device=device)
                     mloss = (mloss * batch_i + loss_items) / (batch_i + 1)
 
-                bs, _, nd = pred_bboxes.shape
-                bboxes, scores = pred_bboxes.split((4, nd - 4), dim=-1)
+                bs, nq, _ = pred_bboxes.shape  # batch_size, num_queries, 4
+                bboxes, scores = pred_bboxes.split((4, nq - 4), dim=-1)
                 num_preds = scores.reshape(bs, -1).shape[1]
                 k = min(max_det, num_preds)
                 topk_values, topk_indexes = torch.topk(scores.reshape(bs, -1), k, dim=1)
@@ -235,6 +234,7 @@ def run(
                 lbs = topk_indexes % scores.shape[2]
                 bboxes = torch.gather(bboxes, 1, topk_boxes.unsqueeze(-1).repeat(1, 1, 4))
                 scores = topk_values
+                pred_masks = torch.gather(pred_masks, 1, topk_boxes.unsqueeze(-1).repeat(1, 1, pred_masks.shape[-1])) if pred_masks is not None else None
                 preds = [torch.cat([xywh2xyxy(bbox), score[..., None], cls[..., None]], dim=-1) 
                          for bbox, score, cls in zip(bboxes, scores, lbs)]
             else:
@@ -244,9 +244,9 @@ def run(
                     loss_items = compute_loss(train_out, targets, masks)[1]
                     mloss = (mloss * batch_i + loss_items) / (batch_i + 1)
 
-                bs, _, nd = pred_bboxes.shape
+                bs, nq, _ = pred_bboxes.shape
                 if nm is not None:
-                    bboxes, scores_and_masks = pred_bboxes.split((4, nd - 4), dim=-1)
+                    bboxes, scores_and_masks = pred_bboxes.split((4, nq - 4), dim=-1)
                     scores = scores_and_masks[:, :, :-nm]
                     mask_coeffs = scores_and_masks[:, :, -nm:]
                     num_preds = scores.reshape(bs, -1).shape[1]
@@ -260,7 +260,7 @@ def run(
                     preds = [torch.cat([xywh2xyxy(bbox), score[..., None], cls[..., None]], dim=-1) 
                              for bbox, score, cls in zip(bboxes, scores, lbs)]
                 else:
-                    bboxes, scores = pred_bboxes.split((4, nd - 4), dim=-1)
+                    bboxes, scores = pred_bboxes.split((4, nq - 4), dim=-1)
                     num_preds = scores.reshape(bs, -1).shape[1]
                     k = min(max_det, num_preds)
                     topk_values, topk_indexes = torch.topk(scores.reshape(bs, -1), k, dim=1)
@@ -291,31 +291,31 @@ def run(
                 predn = pred.clone()
                 scale_boxes(im[si].shape[1:], predn[:, :4], shape, shapes[si][1])
                 gt_masks = masks[targets[:, 0] == si]
-                pred_masks = None
+                pred_masks_batch = None
 
                 if is_detr:
-                    pred_masks = dec_masks[-1][si]
+                    pred_masks_batch = pred_masks[si] if pred_masks is not None else None
                 elif nm is not None and protos is not None:
-                    pred_masks = process_mask(protos[si], mask_coeffs[si], pred[:, :4], shape=im[si].shape[1:])
+                    pred_masks_batch = process_mask(protos[si], mask_coeffs[si], pred[:, :4], im[si].shape[1:])
 
                 if nl:
-                    tbox = xywh2xyxy(labels[:, 1:5]) * torch.tensor(im[si].shape[1:], device=device)[[1, 0, 1, 0]]
+                    tbox = xywh2xyxy(labels[:, 1:5])
                     scale_boxes(im[si].shape[1:], tbox, shape, shapes[si][1])
                     labelsn = torch.cat((labels[:, 0:1], tbox), 1)
-                    correct_bboxes, correct_masks = process_batch(predn, labelsn, iouv, pred_masks, gt_masks, overlap)
+                    correct_bboxes, correct_masks = process_batch(predn, labelsn, iouv, pred_masks_batch, gt_masks, overlap)
                     if plots:
                         confusion_matrix.process_batch(predn, labelsn)
 
                 stats.append((correct_bboxes, correct_masks, pred[:, 4], pred[:, 5], labels[:, 0]))
                 
-                if pred_masks is not None and plots and batch_i < 3:
-                    plot_masks.append(pred_masks[:15].cpu())
+                if pred_masks_batch is not None and plots and batch_i < 3:
+                    plot_masks.append(pred_masks_batch[:15].cpu())
 
                 if save_txt:
                     save_one_txt(predn, save_conf, shape, file=save_dir / 'labels' / f'{path.stem}.txt')
                 if save_json:
-                    pred_masks_scaled = scale_image(im[si].shape[1:], pred_masks.permute(1, 2, 0).contiguous().cpu().numpy(), 
-                                                  shape, shapes[si][1]) if pred_masks is not None else None
+                    pred_masks_scaled = scale_image(im[si].shape[1:], pred_masks_batch.permute(1, 2, 0).contiguous().cpu().numpy(), 
+                                                  shape, shapes[si][1]) if pred_masks_batch is not None else None
                     save_one_json(predn, jdict, path, class_map, pred_masks_scaled)
 
         if plots and batch_i < 3:
