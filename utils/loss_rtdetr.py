@@ -415,6 +415,7 @@ class DETRLoss(nn.Module):
         return {k: v.squeeze() for k, v in loss.items()}
 
     def _get_loss_mask(self, masks, gt_mask, match_indices, gt_groups, postfix=''):
+        # masks: [b, query, h, w], gt_mask: list[[n, H, W]]
         name_mask = f'loss_mask{postfix}'
         name_dice = f'loss_dice{postfix}'
 
@@ -425,11 +426,8 @@ class DETRLoss(nn.Module):
             loss[name_dice] = torch.tensor(0., device=self.device)
             return loss
         
-        num_gts = sum(gt_groups)  # Tổng số ground truth trong batch
-        # Gọi hàm _get_assigned_bboxes với mask
-        _, _, src_masks, target_masks = self._get_assigned_bboxes(
-            masks, gt_mask, match_indices, gt_groups, masks, gt_mask
-        )
+        num_gts = sum(gt_groups)
+        src_masks, target_masks = self._get_assigned_bboxes(masks, gt_mask, match_indices, gt_groups)
         src_masks = F.interpolate(src_masks.unsqueeze(0), size=target_masks.shape[-2:], mode='bilinear')[0]
         loss[name_mask] = self.loss_gain['mask'] * sigmoid_focal_loss(src_masks, target_masks, num_gts) / len(target_masks)
         loss[name_dice] = self.loss_gain['dice'] * self._dice_loss(src_masks, target_masks, num_gts) / len(target_masks)
@@ -535,60 +533,45 @@ class DETRLoss(nn.Module):
         dst_idx = torch.cat([dst for (_, dst) in match_indices])
         return (batch_idx, src_idx), dst_idx
 
-    def _get_assigned_bboxes(self, pred_bboxes, gt_bboxes, match_indices, gt_groups=None, pred_masks=None, gt_masks=None):
+    def _get_assigned_bboxes(self, pred_bboxes, gt_bboxes, match_indices, gt_groups=None):
         """
-        Assign predicted bounding boxes and masks to ground truth bounding boxes and masks based on match indices.
+        Assign predicted bounding boxes or masks to ground truth based on match indices.
 
         Args:
-            pred_bboxes (torch.Tensor): Predicted bounding boxes [b, query, 4].
-            gt_bboxes (torch.Tensor): Ground truth bounding boxes [num_gts, 4].
+            pred_bboxes (torch.Tensor): Predicted bounding boxes or masks.
+            gt_bboxes (torch.Tensor or List[torch.Tensor]): Ground truth bounding boxes or masks.
             match_indices (List[tuple]): List of tuples containing matched indices.
-            gt_groups (List[int], optional): List of number of ground truths per image.
-            pred_masks (torch.Tensor, optional): Predicted masks [b, query, h, w].
-            gt_masks (List[torch.Tensor], optional): Ground truth masks, each [num_gts_i, H, W].
+            gt_groups (List[int], optional): List of number of ground truths per image (needed for masks).
 
         Returns:
-            Tuple: (pred_bboxes_assigned, gt_bboxes_assigned, pred_masks_assigned, gt_masks_assigned)
-                If masks are not provided, the last two elements will be None.
+            (tuple): Tuple containing assigned predictions and ground truths.
         """
-        device = self.device
-
-        # Assign predicted and ground truth bounding boxes
-        pred_bboxes_assigned = torch.cat(
+        # Xử lý pred_assigned (dự đoán)
+        pred_assigned = torch.cat(
             [
-                t[i] if len(i) > 0 else torch.zeros(0, t.shape[-1], device=device)
+                t[i] if len(i) > 0 else torch.zeros((0,) + t.shape[1:], device=self.device)
                 for t, (i, _) in zip(pred_bboxes, match_indices)
             ]
         )
-        gt_bboxes_assigned = torch.cat(
-            [
-                t[j] if len(j) > 0 else torch.zeros(0, t.shape[-1], device=device)
-                for t, (_, j) in zip(gt_bboxes, match_indices)
-            ]
-        )
 
-        # If masks are not provided, return only bounding boxes
-        if pred_masks is None or gt_masks is None:
-            return pred_bboxes_assigned, gt_bboxes_assigned, None, None
+        # Xử lý gt_assigned (ground truth)
+        if isinstance(gt_bboxes, torch.Tensor):  # Trường hợp bounding box
+            gt_assigned = torch.cat(
+                [
+                    t[j] if len(j) > 0 else torch.zeros((0,) + t.shape[1:], device=self.device)
+                    for t, (_, j) in zip(gt_bboxes.split(gt_groups, dim=0), match_indices)
+                ]
+            )
+        else:  # Trường hợp mask (gt_bboxes là danh sách các tensor)
+            gt_groups = torch.as_tensor([0, *gt_groups[:-1]]).cumsum_(0) if gt_groups is not None else None
+            gt_assigned = torch.cat(
+                [
+                    (t[j - gt_groups[k]] if len(j) > 0 else torch.zeros((0,) + t.shape[1:], device=t.device))
+                    for t, (_, j), k in zip(gt_bboxes, match_indices, range(len(gt_bboxes)))
+                ]
+            )
 
-        # Assign predicted and ground truth masks
-        pred_masks_assigned = torch.cat(
-            [
-                t[i] if len(i) > 0 else torch.zeros(0, t.shape[-2], t.shape[-1], device=device)
-                for t, (i, _) in zip(pred_masks, match_indices)
-            ]
-        )
-
-        # Compute cumulative offsets for gt_masks based on gt_groups
-        gt_groups = torch.as_tensor([0, *gt_groups[:-1]], device=device).cumsum_(0)
-        gt_masks_assigned = torch.cat(
-            [
-                t[j - gt_groups[k]] if len(j) > 0 else torch.zeros(0, t.shape[-2], t.shape[-1], device=device)
-                for t, (_, j), k in zip(gt_masks, match_indices, range(len(gt_masks)))
-            ]
-        )
-
-        return pred_bboxes_assigned, gt_bboxes_assigned, pred_masks_assigned, gt_masks_assigned
+        return pred_assigned, gt_assigned
 
     # def _get_assigned_bboxes(self, pred_bboxes, gt_bboxes, match_indices):
     #     """
