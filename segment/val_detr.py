@@ -87,8 +87,9 @@ def process_batch(detections, labels, iouv, pred_masks=None, gt_masks=None, over
             gt_masks = gt_masks.repeat(nl, 1, 1)
             gt_masks = torch.where(gt_masks == index, 1.0, 0.0)
         if gt_masks.shape[1:] != pred_masks.shape[1:]:
+            gt_masks = gt_masks.float()  # Chuyển sang float32
             gt_masks = F.interpolate(gt_masks[None], pred_masks.shape[1:], mode="bilinear", align_corners=False)[0]
-            gt_masks = gt_masks.gt_(0.5)
+            gt_masks = gt_masks.gt(0.5)  # Giữ tính nhị phân
         iou_mask = mask_iou(gt_masks.view(gt_masks.shape[0], -1), pred_masks.view(pred_masks.shape[0], -1))
         for i in range(len(iouv)):
             x = torch.where((iou_mask >= iouv[i]) & correct_class)
