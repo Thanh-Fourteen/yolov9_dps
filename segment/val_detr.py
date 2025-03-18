@@ -293,18 +293,22 @@ def run(
         pred_masks = dec_masks[-1]  # [bs, num_queries, h, w]
         outputs = [torch.zeros((0, 6), device=bboxes.device)] * bs
 
+        # Tính số lượng dự đoán tối đa có thể chọn (tránh lỗi out of range)
+        num_queries = scores.shape[1]
+        k = min(max_det, num_queries)  # Chọn k nhỏ nhất giữa max_det và num_queries
+
         # Chọn top-k dựa trên scores
-        topk_values, topk_indexes = torch.topk(scores.max(dim=-1).values, max_det, dim=1)  # [bs, max_det]
-        topk_boxes = topk_indexes  # Chỉ số của topk queries
-        topk_labels = scores.gather(2, topk_boxes.unsqueeze(-1).repeat(1, 1, scores.shape[-1])).argmax(dim=-1)  # [bs, max_det]
+        topk_values, topk_indexes = torch.topk(scores.max(dim=-1).values, k, dim=1)  # [bs, k]
+        topk_boxes = topk_indexes  # Chỉ số của top-k queries
+        topk_labels = scores.gather(2, topk_boxes.unsqueeze(-1).repeat(1, 1, scores.shape[-1])).argmax(dim=-1)  # [bs, k]
 
         for i in range(bs):
-            bbox = bboxes[i, topk_boxes[i]]  # [max_det, 4]
-            score = topk_values[i]  # [max_det]
-            cls = topk_labels[i]  # [max_det]
+            bbox = bboxes[i, topk_boxes[i]]  # [k, 4]
+            score = topk_values[i]  # [k]
+            cls = topk_labels[i]  # [k]
             bbox = xywh2xyxy(bbox)
             pred = torch.cat([bbox, score[..., None], cls[..., None]], dim=-1)
-            pred = pred[score.argsort(descending=True)]
+            pred = pred[score.argsort(descending=True)]  # Sắp xếp theo score giảm dần
             outputs[i] = pred
 
         # Đánh giá
@@ -333,11 +337,15 @@ def run(
                 scale_boxes(im[si].shape[1:], tbox, shape, shapes[si][1])
                 labelsn = torch.cat((labels[:, 0:1], tbox), 1)
                 
+                # Đánh giá bbox
                 correct_bboxes = process_batch(predn, labelsn, iouv)
                 
+                # Đánh giá mask
                 gt_mask = _targets["mask"][si]
                 if gt_mask.numel() > 0 and npr > 0:
                     topk_pred_masks = pred_masks[si, topk_boxes[si]]  # [npr, h, w]
+                    if topk_pred_masks.shape[1:] != gt_mask.shape:
+                        topk_pred_masks = F.interpolate(topk_pred_masks.unsqueeze(0), size=gt_mask.shape, mode="bilinear", align_corners=False).squeeze(0)
                     correct_masks = process_batch(predn, labelsn, iouv, topk_pred_masks, gt_mask, overlap=overlap, masks=True)
                 if plots:
                     confusion_matrix.process_batch(predn, labelsn)
