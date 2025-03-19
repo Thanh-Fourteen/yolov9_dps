@@ -380,6 +380,7 @@ def run(
                     if topk_pred_masks.shape[1:] != gt_masks.shape[1:]:
                         gt_masks = F.interpolate(gt_masks.unsqueeze(0), topk_pred_masks.shape[1:], mode="bilinear", align_corners=False)[0]
                         gt_masks = gt_masks.gt_(0.5)
+                    topk_pred_masks = torch.sigmoid(topk_pred_masks)
                     topk_pred_masks = (topk_pred_masks > 0.5).float()  # Nhị phân hóa mask dự đoán
                     correct_masks = process_batch(predn, labelsn, iouv, topk_pred_masks, gt_masks, masks=True, overlap=overlap)
                     LOGGER.info(f"correct_masks sum: {correct_masks.sum().item()}")
