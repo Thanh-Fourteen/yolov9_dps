@@ -136,12 +136,6 @@ def run(
         compute_loss=None,
         callbacks=Callbacks(),
 ):
-    if save_json:
-        check_requirements(['pycocotools'])
-        process = process_mask_upsample  # more accurate
-    else:
-        process = process_mask  # faster
-    
     # Initialize/load model and set device
     training = model is not None
     if training:
@@ -279,9 +273,10 @@ def run(
         pred_masks_all = []
         if dec_masks is not None:
             for si in range(bs):
-                # pred_masks = process(dec_masks[si], preds[si][:, :4], shape=im[si].shape[1:])
-                # pred_masks_all.append(pred_masks)
-
+                print(f"\ndec_masks.shape = {dec_masks.shape}")
+                print(f"\ndec_masks[si].shape = {dec_masks[si].shape}")
+                print(f"\nim.shape = {im.shape}")
+                print(f"\nim[si].shape = {im[si].shape}")
                 pred_masks = dec_masks[si]  # [N, H_mask, W_mask]
                 pred_masks = F.interpolate(pred_masks[None], size=im[si].shape[1:], mode='bilinear', align_corners=False)[0]
                 pred_masks = pred_masks.sigmoid().gt_(0.5)  # Nhị phân hóa với ngưỡng 0.5
