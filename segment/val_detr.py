@@ -407,7 +407,7 @@ def run(
         LOGGER.info(f"Results saved to {colorstr('bold', save_dir)}{s}")
     final_metric = (mp_bbox, mr_bbox, map50_bbox, map_bbox, mp_mask, mr_mask, map50_mask, map_mask,
                     *(mloss.cpu() / len(dataloader)).tolist())
-    return final_metric, t
+    return final_metric, metrics.get_maps(nc), t
 
 
 def parse_opt():
