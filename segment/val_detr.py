@@ -357,9 +357,10 @@ def run(
                     pred_masks = dec_masks[-1, si]  # Last decoder layer masks for image si (300, H, W)
                     topk_pred_masks = pred_masks[topk_boxes[si]]  # Select top-k masks (max_det, H, W)
 
-                    # Ensure gt_masks and pred_masks have compatible shapes
+                    # Ensure gt_masks and pred_masks have compatible shapes and data types
                     if gt_masks.dim() == 2:  # If gt_masks is (H, W), add batch dimension
                         gt_masks = gt_masks.unsqueeze(0)  # (1, H, W)
+                    gt_masks = gt_masks.float()  # Convert to float32 to support interpolation
                     if topk_pred_masks.shape[1:] != gt_masks.shape[1:]:
                         gt_masks = F.interpolate(gt_masks.unsqueeze(0), topk_pred_masks.shape[1:], mode="bilinear", align_corners=False)[0]
                         gt_masks = gt_masks.gt_(0.5)  # Binarize after interpolation
@@ -373,8 +374,7 @@ def run(
             if save_txt:
                 save_one_txt(predn, save_conf, shape, file=save_dir / 'labels' / f'{path.stem}.txt')
             if save_json:
-                # Note: save_one_json needs pred_masks argument, but it's missing in your call
-                pred_masks_scaled = topk_pred_masks.cpu().numpy() if save_json and npr > 0 else np.zeros((0, *im[si].shape[1:]))
+                pred_masks_scaled = topk_pred_masks.cpu().numpy() if npr > 0 else np.zeros((0, *im[si].shape[1:]))
                 save_one_json(predn, jdict, path, class_map, pred_masks_scaled)
 
             # callbacks.run('on_val_image_end', pred, predn, path, names, im[si])
