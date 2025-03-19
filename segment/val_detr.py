@@ -279,7 +279,12 @@ def run(
         pred_masks_all = []
         if dec_masks is not None:
             for si in range(bs):
-                pred_masks = process(dec_masks[si], preds[si][:, :4], shape=im[si].shape[1:])
+                # pred_masks = process(dec_masks[si], preds[si][:, :4], shape=im[si].shape[1:])
+                # pred_masks_all.append(pred_masks)
+
+                pred_masks = dec_masks[si]  # [N, H_mask, W_mask]
+                pred_masks = F.interpolate(pred_masks[None], size=im[si].shape[1:], mode='bilinear', align_corners=False)[0]
+                pred_masks = pred_masks.sigmoid().gt_(0.5)  # Nhị phân hóa với ngưỡng 0.5
                 pred_masks_all.append(pred_masks)
 
         # Metrics
