@@ -123,17 +123,17 @@ def process_batch(detections, labels, iouv, pred_masks=None, gt_masks=None, over
         if gt.dtype != pm.dtype:
             pm = pm.to(gt.dtype)
         iou = mask_iou(gt, pm)
-        LOGGER.info(f"Mask IoU mean: {iou.mean().item() if iou.numel() > 0 else 0}")
+        # LOGGER.info(f"Mask IoU mean: {iou.mean().item() if iou.numel() > 0 else 0}")
     else:  # boxes
         iou = box_iou(labels[:, 1:], detections[:, :4])
-        LOGGER.info(f"Bbox IoU mean: {iou.mean().item() if iou.numel() > 0 else 0}")
+        # LOGGER.info(f"Bbox IoU mean: {iou.mean().item() if iou.numel() > 0 else 0}")
 
     correct = np.zeros((detections.shape[0], iouv.shape[0])).astype(bool)
     correct_class = labels[:, 0:1] == detections[:, 5]
-    LOGGER.info(f"Number of class matches: {correct_class.sum().item()}")
+    # LOGGER.info(f"Number of class matches: {correct_class.sum().item()}")
     for i in range(len(iouv)):
         x = torch.where((iou >= iouv[i]) & correct_class)
-        LOGGER.info(f"IoU threshold {iouv[i]:.2f}: {x[0].shape[0]} matches")
+        # LOGGER.info(f"IoU threshold {iouv[i]:.2f}: {x[0].shape[0]} matches")
         if x[0].shape[0]:
             matches = torch.cat((torch.stack(x, 1), iou[x[0], x[1]][:, None]), 1).cpu().numpy()
             if x[0].shape[0] > 1:
@@ -205,7 +205,7 @@ def run(
             device = model.device
             if not (pt or jit):
                 batch_size = 1
-                LOGGER.info(f'Forcing --batch-size 1 square inference (1,3,{imgsz},{imgsz}) for non-PyTorch models')
+                # LOGGER.info(f'Forcing --batch-size 1 square inference (1,3,{imgsz},{imgsz}) for non-PyTorch models')
         data = check_dataset(data)
 
     # Configure
@@ -249,8 +249,8 @@ def run(
     callbacks.run('on_val_start')
     pbar = tqdm(dataloader, desc=s, bar_format=TQDM_BAR_FORMAT)
     for batch_i, (im, targets, paths, shapes, masks) in enumerate(pbar):
-        LOGGER.info(f"Batch {batch_i}: targets shape: {targets.shape}")
-        LOGGER.info(f"Raw targets (first 5): {targets[:5].tolist()}")
+        # LOGGER.info(f"Batch {batch_i}: targets shape: {targets.shape}")
+        # LOGGER.info(f"Raw targets (first 5): {targets[:5].tolist()}")
         callbacks.run('on_val_batch_start')
         with dt[0]:
             if cuda:
@@ -317,9 +317,9 @@ def run(
 
         # Đánh giá
         for si, pred in enumerate(preds):
-            LOGGER.info(f"Image {si} shapes: {shapes[si]}")
-            LOGGER.info(f"Raw scores shape: {scores.shape}")
-            LOGGER.info(f"Top-k classes (first 5): {lbs[si][:5].tolist()}")
+            # LOGGER.info(f"Image {si} shapes: {shapes[si]}")
+            # LOGGER.info(f"Raw scores shape: {scores.shape}")
+            # LOGGER.info(f"Top-k classes (first 5): {lbs[si][:5].tolist()}")
             labels = targets[targets[:, 0] == si, 1:]
             nl, npr = labels.shape[0], pred.shape[0]
             path, shape = Path(paths[si]), shapes[si][0]
@@ -327,7 +327,7 @@ def run(
             correct_masks = torch.zeros(npr, niou, dtype=torch.bool, device=device)
             seen += 1
 
-            LOGGER.info(f"Image {si}: {nl} labels, {npr} predictions")
+            # LOGGER.info(f"Image {si}: {nl} labels, {npr} predictions")
 
             if npr == 0:
                 if nl:
@@ -342,24 +342,24 @@ def run(
             scale_boxes(im[si].shape[1:], predn[:, :4], shape, shapes[si][1])
 
             # Log dự đoán và ground truth
-            LOGGER.info(f"Pred boxes (first 5): {predn[:5, :4].tolist()}")
-            LOGGER.info(f"Pred classes (first 5): {predn[:5, 5].tolist()}")
-            LOGGER.info(f"Pred conf (first 5): {predn[:5, 4].tolist()}")
+            # LOGGER.info(f"Pred boxes (first 5): {predn[:5, :4].tolist()}")
+            # LOGGER.info(f"Pred classes (first 5): {predn[:5, 5].tolist()}")
+            # LOGGER.info(f"Pred conf (first 5): {predn[:5, 4].tolist()}")
 
             # Đánh giá phát hiện đối tượng và phân đoạn
             if nl:
                 tbox = xywh2xyxy(labels[:, 1:5])
-                LOGGER.info(f"Raw tbox (first 5): {tbox[:5].tolist()}")
-                # scale_boxes(im[si].shape[1:], tbox, shape, shapes[si][1])
-                LOGGER.info(f"Scaled tbox (first 5): {tbox[:5].tolist()}")
+                # LOGGER.info(f"Raw tbox (first 5): {tbox[:5].tolist()}")
+                scale_boxes(im[si].shape[1:], tbox, shape, shapes[si][1])
+                # LOGGER.info(f"Scaled tbox (first 5): {tbox[:5].tolist()}")
                 labelsn = torch.cat((labels[:, 0:1], tbox), 1)
 
-                LOGGER.info(f"GT boxes (first 5): {labelsn[:5, 1:].tolist()}")
-                LOGGER.info(f"GT classes (first 5): {labelsn[:5, 0].tolist()}")
+                # LOGGER.info(f"GT boxes (first 5): {labelsn[:5, 1:].tolist()}")
+                # LOGGER.info(f"GT classes (first 5): {labelsn[:5, 0].tolist()}")
 
                 # Đánh giá hộp giới hạn
                 correct_bboxes = process_batch(predn, labelsn, iouv)
-                LOGGER.info(f"correct_bboxes sum: {correct_bboxes.sum().item()}")
+                # LOGGER.info(f"correct_bboxes sum: {correct_bboxes.sum().item()}")
 
                 # Đánh giá mặt nạ
                 gt_masks_all = _targets["mask"]
@@ -370,9 +370,9 @@ def run(
                     pred_masks = dec_masks[-1, si]
                     topk_pred_masks = pred_masks[topk_boxes[si]]
 
-                    LOGGER.info(f"gt_masks shape: {gt_masks.shape}, topk_pred_masks shape: {topk_pred_masks.shape}")
-                    LOGGER.info(f"gt_masks min/max: {gt_masks.min().item()}/{gt_masks.max().item()}")
-                    LOGGER.info(f"topk_pred_masks min/max: {topk_pred_masks.min().item()}/{topk_pred_masks.max().item()}")
+                    # LOGGER.info(f"gt_masks shape: {gt_masks.shape}, topk_pred_masks shape: {topk_pred_masks.shape}")
+                    # LOGGER.info(f"gt_masks min/max: {gt_masks.min().item()}/{gt_masks.max().item()}")
+                    # LOGGER.info(f"topk_pred_masks min/max: {topk_pred_masks.min().item()}/{topk_pred_masks.max().item()}")
 
                     if gt_masks.dim() == 2:
                         gt_masks = gt_masks.unsqueeze(0)
@@ -383,7 +383,7 @@ def run(
                     topk_pred_masks = torch.sigmoid(topk_pred_masks)
                     topk_pred_masks = (topk_pred_masks > 0.5).float()  # Nhị phân hóa mask dự đoán
                     correct_masks = process_batch(predn, labelsn, iouv, topk_pred_masks, gt_masks, masks=True, overlap=overlap)
-                    LOGGER.info(f"correct_masks sum: {correct_masks.sum().item()}")
+                    # LOGGER.info(f"correct_masks sum: {correct_masks.sum().item()}")
 
                 if plots:
                     confusion_matrix.process_batch(predn, labelsn)
