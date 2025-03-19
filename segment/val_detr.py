@@ -273,13 +273,17 @@ def run(
         pred_masks_all = []
         if dec_masks is not None:
             for si in range(bs):
-                print(f"\ndec_masks.shape = {dec_masks.shape}")
-                print(f"\ndec_masks[si].shape = {dec_masks[si].shape}")
-                print(f"\nim.shape = {im.shape}")
-                print(f"\nim[si].shape = {im[si].shape}")
-                pred_masks = dec_masks[si]  # [N, H_mask, W_mask]
-                pred_masks = F.interpolate(pred_masks[None], size=im[si].shape[1:], mode='bilinear', align_corners=False)[0]
-                pred_masks = pred_masks.sigmoid().gt_(0.5)  # Nhị phân hóa với ngưỡng 0.5
+                # Lấy mask thô từ dec_masks
+                mask_raw = dec_masks[-1, si]  # [256, 16, 24] - chọn lớp cuối cùng
+                # Lấy số lượng đối tượng thực sự từ preds[si]
+                n_preds = preds[si].shape[0]  # Số đối tượng sau lọc max_det
+                # Chỉ lấy N mask tương ứng với số đối tượng trong preds[si]
+                mask_reduced = mask_raw[:n_preds]  # [N, 16, 24]
+                # Nội suy lên kích thước ảnh gốc
+                pred_masks = F.interpolate(mask_reduced[None], size=im[si].shape[1:], mode='bilinear', align_corners=False)[0]
+                # pred_masks: [N, 128, 192]
+                # Nhị phân hóa (nếu cần, vì forward đã có sigmoid)
+                pred_masks = pred_masks.gt_(0.5)  # [N, 128, 192]
                 pred_masks_all.append(pred_masks)
 
         # Metrics

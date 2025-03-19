@@ -1066,23 +1066,6 @@ class RTDETRSegment(Detect):
         # H, W => m = H * W
         seg_masks_flat = seg_masks_flat.view(seg_masks_flat.shape[0], seg_masks_flat.shape[1], -1) 
 
-        # # Trong chế độ huấn luyện, sequence_output là stack của tất cả các tầng
-        # # Lấy tầng cuối cùng cho phân đoạn
-        # final_sequence_output = sequence_output[-1] if self.training else sequence_output
-
-        # # Tính bản đồ chú ý
-        # bbox_mask = self.bbox_attention(final_sequence_output, proj_feat)  # (batch_size, num_queries, nhead, h, w)
-
-        # # Tạo mặt nạ phân đoạn
-        # seg_masks = self.mask_head(proj_feat, bbox_mask, fpns[-3:])  # (batch_size * num_queries, 1, h', w')
-        # batch_size = proj_feat.shape[0]
-        # seg_masks = seg_masks.view(batch_size, self.num_queries, 1, seg_masks.shape[-2], seg_masks.shape[-1])
-        # seg_masks = seg_masks.squeeze(2)  # (batch_size, num_queries, h', w')
-
-        # # Điều chỉnh kích thước mặt nạ về kích thước hình ảnh gốc
-        # seg_masks_resized = F.interpolate(seg_masks, size=imgsz, mode='bilinear', align_corners=False)
-        # seg_masks_flat = seg_masks_resized.mean(dim=[2, 3], keepdim=True)  # (batch_size, num_queries, 1)
-
         # Chuẩn bị đầu ra
         x_out = (dec_bboxes, dec_scores, dec_seg_masks_resized, enc_bboxes, enc_scores, enc_seg_masks_resized, dn_meta)
         if self.training:
