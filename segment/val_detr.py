@@ -341,28 +341,41 @@ def run(
 
             # Đánh giá phát hiện đối tượng và phân đoạn
             if nl:
-                tbox = xywh2xyxy(labels[:, 1:5]) * torch.tensor(im[si].shape[1:], device=device)[[1, 0, 1, 0]]
+                tbox = xywh2xyxy(labels[:, 1:5])  # Convert ground truth boxes to xyxy format
                 scale_boxes(im[si].shape[1:], tbox, shape, shapes[si][1])
                 labelsn = torch.cat((labels[:, 0:1], tbox), 1)
-                
+
                 # Đánh giá hộp giới hạn
                 correct_bboxes = process_batch(predn, labelsn, iouv)
-                
+
                 # Đánh giá mặt nạ
-                gt_mask = _targets["mask"][si]
-                if gt_mask.numel() > 0:
-                    pred_masks = dec_masks[-1, si]  # Tầng cuối của dec_masks
-                    topk_pred_masks = pred_masks[topk_boxes[si]]
-                    correct_masks = process_batch(predn, labelsn, iouv, topk_pred_masks, gt_mask, masks=True)
+                gt_masks_all = _targets["mask"]  # (N, H, W) for the entire batch
+                midx = targets[:, 0] == si  # Indices of ground truth for image si
+                gt_masks = gt_masks_all[midx]  # Select ground truth masks for image si
+
+                if gt_masks.numel() > 0 and npr > 0:
+                    pred_masks = dec_masks[-1, si]  # Last decoder layer masks for image si (300, H, W)
+                    topk_pred_masks = pred_masks[topk_boxes[si]]  # Select top-k masks (max_det, H, W)
+
+                    # Ensure gt_masks and pred_masks have compatible shapes
+                    if gt_masks.dim() == 2:  # If gt_masks is (H, W), add batch dimension
+                        gt_masks = gt_masks.unsqueeze(0)  # (1, H, W)
+                    if topk_pred_masks.shape[1:] != gt_masks.shape[1:]:
+                        gt_masks = F.interpolate(gt_masks.unsqueeze(0), topk_pred_masks.shape[1:], mode="bilinear", align_corners=False)[0]
+                        gt_masks = gt_masks.gt_(0.5)  # Binarize after interpolation
+                    correct_masks = process_batch(predn, labelsn, iouv, topk_pred_masks, gt_masks, masks=True, overlap=overlap)
+
                 if plots:
                     confusion_matrix.process_batch(predn, labelsn)
-            
+
             stats.append((correct_bboxes, correct_masks, pred[:, 4], pred[:, 5], labels[:, 0]))
 
             if save_txt:
                 save_one_txt(predn, save_conf, shape, file=save_dir / 'labels' / f'{path.stem}.txt')
             if save_json:
-                save_one_json(predn, jdict, path, class_map)
+                # Note: save_one_json needs pred_masks argument, but it's missing in your call
+                pred_masks_scaled = topk_pred_masks.cpu().numpy() if save_json and npr > 0 else np.zeros((0, *im[si].shape[1:]))
+                save_one_json(predn, jdict, path, class_map, pred_masks_scaled)
 
             # callbacks.run('on_val_image_end', pred, predn, path, names, im[si])
 
