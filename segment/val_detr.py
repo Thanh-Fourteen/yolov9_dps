@@ -350,7 +350,7 @@ def run(
             if nl:
                 tbox = xywh2xyxy(labels[:, 1:5])
                 LOGGER.info(f"Raw tbox (first 5): {tbox[:5].tolist()}")
-                scale_boxes(im[si].shape[1:], tbox, shape, shapes[si][1])
+                # scale_boxes(im[si].shape[1:], tbox, shape, shapes[si][1])
                 LOGGER.info(f"Scaled tbox (first 5): {tbox[:5].tolist()}")
                 labelsn = torch.cat((labels[:, 0:1], tbox), 1)
 
