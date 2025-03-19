@@ -1036,7 +1036,7 @@ class RTDETRSegment(Detect):
         enc_seg_masks = self.mask_head(proj_feat, enc_bbox_mask, fpns[-3:])
         enc_seg_masks = enc_seg_masks.view(batch_size, self.num_queries, 1, enc_seg_masks.shape[-2], enc_seg_masks.shape[-1])
         enc_seg_masks = enc_seg_masks.squeeze(2)  # (batch_size, num_queries, h', w')
-        enc_seg_masks = torch.sigmoid(enc_seg_masks)  # Chuẩn hóa thành [0, 1]
+        # enc_seg_masks = torch.sigmoid(enc_seg_masks)  # Chuẩn hóa thành [0, 1]
         enc_seg_masks_resized = F.interpolate(enc_seg_masks, size=shapes[0], mode='bilinear', align_corners=False)
         
         if self.training:
@@ -1047,7 +1047,7 @@ class RTDETRSegment(Detect):
                 seg_masks = self.mask_head(proj_feat, bbox_mask, fpns[-3:])  # (batch_size * num_queries, 1, h', w')
                 seg_masks = seg_masks.view(batch_size, self.num_queries, 1, seg_masks.shape[-2], seg_masks.shape[-1])
                 seg_masks = seg_masks.squeeze(2)  # (batch_size, num_queries, h', w')
-                seg_masks = torch.sigmoid(seg_masks)
+                # seg_masks = torch.sigmoid(seg_masks)
                 seg_masks_resized = F.interpolate(seg_masks, size=shapes[0], mode='bilinear', align_corners=False)
                 seg_masks_list.append(seg_masks_resized)
             dec_seg_masks_resized = torch.stack(seg_masks_list)  # (num_decoder, batch_size, num_queries, H, W)
@@ -1057,7 +1057,7 @@ class RTDETRSegment(Detect):
             seg_masks = self.mask_head(proj_feat, bbox_mask, fpns[-3:])
             seg_masks = seg_masks.view(batch_size, self.num_queries, 1, seg_masks.shape[-2], seg_masks.shape[-1])
             seg_masks = seg_masks.squeeze(2)
-            seg_masks = torch.sigmoid(seg_masks)
+            # seg_masks = torch.sigmoid(seg_masks)
             dec_seg_masks_resized = F.interpolate(seg_masks, size=shapes[0], mode='bilinear', align_corners=False)
             dec_seg_masks_resized = dec_seg_masks_resized.unsqueeze(0)  # (1, batch_size, num_queries, H, W)
 
