@@ -97,8 +97,8 @@ def process_batch(detections, labels, iouv, pred_masks=None, gt_masks=None, over
 
     for i in range(len(iouv)):
         if masks and pred_masks is not None and gt_masks is not None:
-            x = torch.where((iou >= iouv[i]) & (mask_iou_vals >= iouv[i]) & correct_class)
-            # x = torch.where((iou >= iouv[i]) & correct_class)
+            # x = torch.where((iou >= iouv[i]) & (mask_iou_vals >= iouv[i]) & correct_class)
+            x = torch.where((iou >= iouv[i]) & correct_class)
         else:
             x = torch.where((iou >= iouv[i]) & correct_class) # IoU > threshold and classes match
         if x[0].shape[0]:
@@ -276,19 +276,12 @@ def run(
         # Process masks
         pred_masks_all = []
         if dec_masks is not None:
-            # for si in range(bs):
-            #     mask_raw = dec_masks[-1, si] 
-            #     n_preds = preds[si].shape[0] 
-            #     mask_reduced = mask_raw[:n_preds] 
-            #     pred_masks = F.interpolate(mask_reduced[None], size=im[si].shape[1:], mode='bilinear', align_corners=False)[0]
-            #     pred_masks = pred_masks.gt_(0.5)  # [N, 128, 192]
-            #     pred_masks_all.append(pred_masks)
             for si in range(bs):
-                mask_raw = dec_masks[-1, si]  # [256, 16, 24]
-                n_preds = preds[si].shape[0]  # Số đối tượng sau lọc max_det, ví dụ 300
-                mask_reduced = mask_raw[:n_preds]  # Cắt ngay từ đầu: [300, 16, 24]
-                pred_masks = F.interpolate(mask_reduced[None], size=im[si].shape[1:], mode="bilinear", align_corners=False)[0]
-                pred_masks = pred_masks.float().gt_(0.5)  # [300, 128, 192]
+                mask_raw = dec_masks[-1, si] 
+                n_preds = preds[si].shape[0] 
+                mask_reduced = mask_raw[:n_preds] 
+                pred_masks = F.interpolate(mask_reduced[None], size=im[si].shape[1:], mode='bilinear', align_corners=False)[0]
+                pred_masks = pred_masks.gt_(0.5)  # [N, 128, 192]
                 pred_masks_all.append(pred_masks)
 
         # Metrics
