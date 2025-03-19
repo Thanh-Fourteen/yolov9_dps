@@ -91,7 +91,8 @@ def process_batch(detections, labels, iouv, pred_masks=None, gt_masks=None, over
         if gt_masks.shape[1:] != pred_masks.shape[1:]:
             gt_masks = gt_masks.float()
             gt_masks = F.interpolate(gt_masks[None], pred_masks.shape[1:], mode="bilinear", align_corners=False)[0]
-            gt_masks = gt_masks.gt_(0.5)
+            gt_masks = gt_masks.gt_(0.5).float()
+        pred_masks = pred_masks.float()
         mask_iou_vals = mask_iou(gt_masks.view(gt_masks.shape[0], -1), pred_masks.view(pred_masks.shape[0], -1))
 
     for i in range(len(iouv)):
