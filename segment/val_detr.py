@@ -229,6 +229,11 @@ def run(
 
             if compute_loss:
                 dec_bboxes, dec_scores, dec_masks, enc_bboxes, enc_scores, enc_masks, dn_meta = preds[1]
+
+                print(f"\ndec_bboxes.shape: {dec_bboxes.shape}")
+                print(f"dec_masks.shape: {dec_masks.shape}")
+                exit()
+
                 if dn_meta is None:
                     dn_bboxes, dn_scores, dn_masks = None, None, None
                 else:
