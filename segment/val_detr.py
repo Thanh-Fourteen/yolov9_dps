@@ -249,6 +249,8 @@ def run(
     callbacks.run('on_val_start')
     pbar = tqdm(dataloader, desc=s, bar_format=TQDM_BAR_FORMAT)
     for batch_i, (im, targets, paths, shapes, masks) in enumerate(pbar):
+        LOGGER.info(f"Batch {batch_i}: targets shape: {targets.shape}")
+        LOGGER.info(f"Raw targets (first 5): {targets[:5].tolist()}")
         callbacks.run('on_val_batch_start')
         with dt[0]:
             if cuda:
@@ -301,6 +303,8 @@ def run(
         topk_values, topk_indexes = torch.topk(scores.reshape(scores.shape[0], -1), max_det, dim=1)
         topk_boxes = topk_indexes // scores.shape[2]
         lbs = topk_indexes % scores.shape[2]
+        LOGGER.info(f"Raw scores shape: {scores.shape}")
+        LOGGER.info(f"Top-k classes (first 5): {lbs[si][:5].tolist()}")
         bboxes = torch.gather(bboxes, 1, topk_boxes.unsqueeze(-1).repeat(1, 1, 4))
         scores = topk_values
 
@@ -315,6 +319,7 @@ def run(
 
         # Đánh giá
         for si, pred in enumerate(preds):
+            LOGGER.info(f"Image {si} shapes: {shapes[si]}")
             labels = targets[targets[:, 0] == si, 1:]
             nl, npr = labels.shape[0], pred.shape[0]
             path, shape = Path(paths[si]), shapes[si][0]
@@ -344,7 +349,9 @@ def run(
             # Đánh giá phát hiện đối tượng và phân đoạn
             if nl:
                 tbox = xywh2xyxy(labels[:, 1:5])
+                LOGGER.info(f"Raw tbox (first 5): {tbox[:5].tolist()}")
                 scale_boxes(im[si].shape[1:], tbox, shape, shapes[si][1])
+                LOGGER.info(f"Scaled tbox (first 5): {tbox[:5].tolist()}")
                 labelsn = torch.cat((labels[:, 0:1], tbox), 1)
 
                 LOGGER.info(f"GT boxes (first 5): {labelsn[:5, 1:].tolist()}")
