@@ -98,6 +98,7 @@ def process_batch(detections, labels, iouv, pred_masks=None, gt_masks=None, over
     for i in range(len(iouv)):
         if masks and pred_masks is not None and gt_masks is not None:
             x = torch.where((iou >= iouv[i]) & (mask_iou_vals >= iouv[i]) & correct_class)
+            # x = torch.where((iou >= iouv[i]) & correct_class)
         else:
             x = torch.where((iou >= iouv[i]) & correct_class) # IoU > threshold and classes match
         if x[0].shape[0]:
@@ -230,10 +231,6 @@ def run(
             if compute_loss:
                 dec_bboxes, dec_scores, dec_masks, enc_bboxes, enc_scores, enc_masks, dn_meta = preds[1]
 
-                print(f"\ndec_bboxes.shape: {dec_bboxes.shape}")
-                print(f"dec_masks.shape: {dec_masks.shape}")
-                exit()
-
                 if dn_meta is None:
                     dn_bboxes, dn_scores, dn_masks = None, None, None
                 else:
@@ -279,18 +276,19 @@ def run(
         # Process masks
         pred_masks_all = []
         if dec_masks is not None:
+            # for si in range(bs):
+            #     mask_raw = dec_masks[-1, si] 
+            #     n_preds = preds[si].shape[0] 
+            #     mask_reduced = mask_raw[:n_preds] 
+            #     pred_masks = F.interpolate(mask_reduced[None], size=im[si].shape[1:], mode='bilinear', align_corners=False)[0]
+            #     pred_masks = pred_masks.gt_(0.5)  # [N, 128, 192]
+            #     pred_masks_all.append(pred_masks)
             for si in range(bs):
-                # Lấy mask thô từ dec_masks
-                mask_raw = dec_masks[-1, si]  # [256, 16, 24] - chọn lớp cuối cùng
-                # Lấy số lượng đối tượng thực sự từ preds[si]
-                n_preds = preds[si].shape[0]  # Số đối tượng sau lọc max_det
-                # Chỉ lấy N mask tương ứng với số đối tượng trong preds[si]
-                mask_reduced = mask_raw[:n_preds]  # [N, 16, 24]
-                # Nội suy lên kích thước ảnh gốc
-                pred_masks = F.interpolate(mask_reduced[None], size=im[si].shape[1:], mode='bilinear', align_corners=False)[0]
-                # pred_masks: [N, 128, 192]
-                # Nhị phân hóa (nếu cần, vì forward đã có sigmoid)
-                pred_masks = pred_masks.gt_(0.5)  # [N, 128, 192]
+                mask_raw = dec_masks[-1, si]  # [256, 16, 24]
+                n_preds = preds[si].shape[0]  # Số đối tượng sau lọc max_det, ví dụ 300
+                mask_reduced = mask_raw[:n_preds]  # Cắt ngay từ đầu: [300, 16, 24]
+                pred_masks = F.interpolate(mask_reduced[None], size=im[si].shape[1:], mode="bilinear", align_corners=False)[0]
+                pred_masks = pred_masks.float().gt_(0.5)  # [300, 128, 192]
                 pred_masks_all.append(pred_masks)
 
         # Metrics
@@ -299,7 +297,7 @@ def run(
             labels = targets[targets[:, 0] == si, 1:]
             nl, npr = labels.shape[0], pred.shape[0]  # number of labels, predictions
             path, shape = Path(paths[si]), shapes[si][0]
-            correct = torch.zeros(npr, niou, dtype=torch.bool, device=device)  # init
+            correct_bboxes = torch.zeros(npr, niou, dtype=torch.bool, device=device)  # init
             correct_masks = torch.zeros(npr, niou, dtype=torch.bool, device=device)
             seen += 1
             
