@@ -109,6 +109,11 @@ def save_one_json(predn, jdict, path, class_map, pred_masks):
             'segmentation': rles[i]})
     
 def process_batch(detections, labels, iouv, pred_masks=None, gt_masks=None, overlap=False, masks=False):
+    print(f"gt_masks.shape: {gt_masks.shape}")
+    print(f"masks.shape: {masks.shape}")
+    print(f"pred_masks.shape: {pred_masks.shape}")
+    print(f"overlap: {overlap}")
+
     """
     Return correct prediction matrix
     Arguments:
