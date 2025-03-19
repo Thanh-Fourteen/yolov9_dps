@@ -303,8 +303,6 @@ def run(
         topk_values, topk_indexes = torch.topk(scores.reshape(scores.shape[0], -1), max_det, dim=1)
         topk_boxes = topk_indexes // scores.shape[2]
         lbs = topk_indexes % scores.shape[2]
-        LOGGER.info(f"Raw scores shape: {scores.shape}")
-        LOGGER.info(f"Top-k classes (first 5): {lbs[si][:5].tolist()}")
         bboxes = torch.gather(bboxes, 1, topk_boxes.unsqueeze(-1).repeat(1, 1, 4))
         scores = topk_values
 
@@ -320,6 +318,8 @@ def run(
         # Đánh giá
         for si, pred in enumerate(preds):
             LOGGER.info(f"Image {si} shapes: {shapes[si]}")
+            LOGGER.info(f"Raw scores shape: {scores.shape}")
+            LOGGER.info(f"Top-k classes (first 5): {lbs[si][:5].tolist()}")
             labels = targets[targets[:, 0] == si, 1:]
             nl, npr = labels.shape[0], pred.shape[0]
             path, shape = Path(paths[si]), shapes[si][0]
