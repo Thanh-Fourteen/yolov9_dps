@@ -22,15 +22,13 @@ if str(ROOT) not in sys.path:
     sys.path.append(str(ROOT))  # add ROOT to PATH
 ROOT = Path(os.path.relpath(ROOT, Path.cwd()))  # relative
 
-# import segment.val as validate  # for end-of-epoch mAP
 from models.experimental import attempt_load
 from models.yolo import SegmentationModel
-from utils.autoanchor import check_anchors
 from utils.autobatch import check_train_batch_size
 from utils.callbacks import Callbacks
 from utils.downloads import attempt_download, is_url
-from utils.general import (LOGGER, TQDM_BAR_FORMAT, check_amp, check_dataset, check_file, check_git_info,
-                           check_git_status, check_img_size, check_requirements, check_suffix, check_yaml, colorstr,
+from utils.general import (LOGGER, TQDM_BAR_FORMAT, check_amp, check_dataset, check_file,
+                        check_img_size, check_suffix, check_yaml, colorstr,
                            get_latest_run, increment_path, init_seeds, intersect_dicts, labels_to_class_weights,
                            labels_to_image_weights, one_cycle, print_args, print_mutation, strip_optimizer, yaml_save)
 from utils.loggers import GenericLogger
@@ -266,10 +264,6 @@ def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictio
             LOGGER.info("Closing dataloader mosaic")
             dataset.mosaic = False
 
-        # Update mosaic border (optional)
-        # b = int(random.uniform(0.25 * imgsz, 0.75 * imgsz + gs) // gs * gs)
-        # dataset.mosaic_border = [b - imgsz, -b]  # height, width borders
-
         mloss = torch.zeros(5, device=device)  # mean losses
         if RANK != -1:
             train_loader.sampler.set_epoch(epoch)
@@ -307,26 +301,9 @@ def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictio
             with torch.cuda.amp.autocast(amp):
                 if detr:
                     bs = len(imgs)
-                    # unique_masks = []
                     batch_idx = targets[:, 0]
                     gt_groups = [(batch_idx == i).sum().item() for i in range(bs)]
 
-                    # for i in range(bs):
-                    #     unique_val = gt_groups[i] 
-                    #     if unique_val > 0: 
-                    #         mask_slices = torch.stack([(masks[i] == val) for val in range(1, unique_val + 1)]).float()
-                    #     else:
-                    #         mask_slices = torch.empty(0)
-                    #     unique_masks.append(mask_slices)
-                    
-                    # bb = targets[:,2:].to(device)
-                    # cls =  targets[:,1].to(device, dtype=torch.long)
-                    # print(f"\ncls shape: {cls.shape}")
-                    # print(f"\nbb shape: {bb.shape}")
-                    # print(f"\nmasks shape: {masks.shape}")
-                    # print(f"\ngt_groups shape: {len(gt_groups)}")
-                    # exit()
-                   
                     _targets = {
                         "cls": targets[:,1].to(device, dtype=torch.long),
                         "bboxes": targets[:,2:].to(device),

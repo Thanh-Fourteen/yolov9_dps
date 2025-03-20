@@ -96,8 +96,13 @@ def process_batch(detections, labels, iouv, pred_masks=None, gt_masks=None, over
         mask_iou_vals = mask_iou(gt_masks.view(gt_masks.shape[0], -1), pred_masks.view(pred_masks.shape[0], -1))
 
     for i in range(len(iouv)):
+        print(f"\niou shape: {iou.shape}")
+        print(f"iouv[i] shape: {iouv[i].shape}")
+        print(f"mask_iou_vals shape: {mask_iou_vals.shape}")
+        exit()
+        
         if masks and pred_masks is not None and gt_masks is not None:
-            # x = torch.where((iou >= iouv[i]) & (mask_iou_vals >= iouv[i]) & correct_class)
+            # x = torch.where((iou >=iouv[i]) & (mask_iou_vals >= iouv[i]) & correct_class)
             x = torch.where((iou >= iouv[i]) & correct_class)
         else:
             x = torch.where((iou >= iouv[i]) & correct_class) # IoU > threshold and classes match
@@ -121,7 +126,7 @@ def run(
         device='',  # cuda device, i.e. 0 or 0,1,2,3 or cpu
         workers=8,  # max dataloader workers (per RANK in DDP mode)
         single_cls=False,  # treat as single-class dataset
-        verbose=False,  # verbose output
+        verbose=False,  # verbose output 
         save_txt=False,  # save results to *.txt
         save_conf=False,  # save confidences in --save-txt labels
         save_json=False,  # save a COCO-JSON results file

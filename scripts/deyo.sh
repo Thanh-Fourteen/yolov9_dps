@@ -1,7 +1,7 @@
-python -m torch.distributed.launch --nproc_per_node 2 --master_port 9999 segment_deyo.py \
+python segment_deyo.py \
     --sync-bn \
     --workers 4 \
-    --device 0,1 \
+    --device 0 \
     --batch 90 \
     --data data/coco.yaml \
     --img 160 \
