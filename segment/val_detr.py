@@ -255,23 +255,24 @@ def run(
                 mloss = (mloss * batch_i + loss_items) / (batch_i + 1)
 
         # Apply Filter bounding box
-        bs, _, nd = preds[0].shape
+        bs, num_queries, nd = preds[0].shape
         m = nd-4-nc # mask w * h
         bboxes, scores, pred_masks_flat = preds[0].split((4, nc, m), dim=-1)
         # bboxes *= self.args.imgsz
         outputs = [torch.zeros((0, 6), device=bboxes.device)] * bs
-        topk_values, topk_indexes = torch.topk(scores.max(dim=-1)[0], max_det, dim=1)
+        k = min(max_det, num_queries)
+        topk_values, topk_indexes = torch.topk(scores.max(dim=-1)[0], k, dim=1)
         topk_boxes = topk_indexes.unsqueeze(-1).repeat(1, 1, 4)
         topk_masks = topk_indexes.unsqueeze(-1).repeat(1, 1, m)
         bboxes = torch.gather(bboxes, 1, topk_boxes)
         pred_masks_flat = torch.gather(pred_masks_flat, 1, topk_masks)
         scores = topk_values
         
-        for i, bbox in enumerate(bboxes):  # (300, 4)
+        for i, bbox in enumerate(bboxes):  # (k, 4)
             bbox = xywh2xyxy(bbox)
             score = scores[i]
             cls = topk_indexes[i]
-            # Do not need threshold for evaluation as only got 300 boxes here
+            # Do not need threshold for evaluation as only got k boxes here
             # idx = score > self.args.conf
             pred = torch.cat([bbox, score[..., None], cls[..., None]], dim=-1)  # filter
             # Sort by confidence to correctly get internal metrics
@@ -286,7 +287,7 @@ def run(
                 mask_flat = pred_masks_flat[si]  
                 h, w = im[si].shape[1:]  
                 if m == h * w:
-                    pred_masks = mask_flat.view(-1, h, w)  # [max_det, H, W]
+                    pred_masks = mask_flat.view(-1, h, w)  # [k, H, W]
                     pred_masks = pred_masks.gt_(0.5) 
                     pred_masks_all.append(pred_masks)
                 else:       # fix shape
