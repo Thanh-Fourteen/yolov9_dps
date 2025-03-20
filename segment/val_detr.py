@@ -97,12 +97,12 @@ def process_batch(detections, labels, iouv, pred_masks=None, gt_masks=None, over
 
     for i in range(len(iouv)):
         if masks and pred_masks is not None and gt_masks is not None:
-            # x = torch.where((iou >=iouv[i]) & (mask_iou_vals >= iouv[i]) & correct_class)
             print(f"\niou shape: {iou.shape}")
             print(f"iouv[i] shape: {iouv[i].shape}")
             print(f"mask_iou_vals shape: {mask_iou_vals.shape}")
             exit()
-            x = torch.where((iou >= iouv[i]) & correct_class)
+            x = torch.where((iou >=iouv[i]) & (mask_iou_vals >= iouv[i]) & correct_class)
+            # x = torch.where((iou >= iouv[i]) & correct_class)
         else:
             x = torch.where((iou >= iouv[i]) & correct_class) # IoU > threshold and classes match
         if x[0].shape[0]:
@@ -255,26 +255,23 @@ def run(
                 mloss = (mloss * batch_i + loss_items) / (batch_i + 1)
 
         # Apply Filter bounding box
-        bs, _, nd = preds[0].shape
-        bboxes, scores = preds[0].split((4, nd - 4), dim=-1)
-        # bboxes *= self.args.imgsz
+        bs, num_queries, nd = preds[0].shape  # nd = 4 + nc + m
+        bboxes, scores, masks_flat = preds[0].split((4, nc, nd - 4 - nc), dim=-1)  # Tách thành 3 phần
         outputs = [torch.zeros((0, 6), device=bboxes.device)] * bs
-        topk_values, topk_indexes = torch.topk(scores.reshape(scores.shape[0], -1), max_det, dim=1)
-        topk_boxes = topk_indexes // scores.shape[2]
-        lbs = topk_indexes % scores.shape[2]
-        bboxes = torch.gather(bboxes, 1, topk_boxes.unsqueeze(-1).repeat(1,1,4))
-        scores = topk_values
-        
-        for i, bbox in enumerate(bboxes):  # (300, 4)
+        topk_values, topk_indexes = torch.topk(scores.max(dim=-1).values, max_det, dim=1)  # Lấy max score trên nc
+        topk_boxes = topk_indexes.unsqueeze(-1).expand(-1, -1, 4)
+        topk_scores = topk_indexes.unsqueeze(-1).expand(-1, -1, nc)
+        topk_masks = topk_indexes.unsqueeze(-1).expand(-1, -1, nd - 4 - nc)
+        bboxes = torch.gather(bboxes, 1, topk_boxes)
+        scores = torch.gather(scores, 1, topk_scores)
+        masks_flat = torch.gather(masks_flat, 1, topk_masks)
+
+        for i, (bbox, score, mask_flat) in enumerate(zip(bboxes, scores, masks_flat)):
             bbox = xywh2xyxy(bbox)
-            score = scores[i]
-            cls = lbs[i]
-            # Do not need threshold for evaluation as only got 300 boxes here
-            # idx = score > self.args.conf
-            pred = torch.cat([bbox, score[..., None], cls[..., None]], dim=-1)  # filter
-            # Sort by confidence to correctly get internal metrics
-            pred = pred[score.argsort(descending=True)]
-            outputs[i] = pred  # [idx]
+            conf, cls = score.max(dim=-1)  # conf là max score, cls là chỉ số lớp tương ứng
+            pred = torch.cat([bbox, conf[..., None], cls[..., None]], dim=-1)
+            pred = pred[conf.argsort(descending=True)]
+            outputs[i] = pred
         preds = outputs
 
         # Process masks
@@ -285,7 +282,7 @@ def run(
                 n_preds = preds[si].shape[0] 
                 mask_reduced = mask_raw[:n_preds] 
                 pred_masks = F.interpolate(mask_reduced[None], size=im[si].shape[1:], mode='bilinear', align_corners=False)[0]
-                pred_masks = pred_masks.gt_(0.5)  # [N, 128, 192]
+                pred_masks = pred_masks.gt_(0.5).float()  # [N, 128, 192]
                 pred_masks_all.append(pred_masks)
 
         # Metrics
