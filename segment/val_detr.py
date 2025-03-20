@@ -155,7 +155,7 @@ def process_batch(detections, labels, iouv, pred_masks=None, gt_masks=None, over
     for i in range(len(iouv)):
         if masks and pred_masks is not None and gt_masks is not None:
             # x = torch.where((iou >=iouv[i]) & (mask_iou_vals >= iouv[i]) & correct_class)
-            x = torch.where((iou >= iouv[i]) & correct_class) 
+            x = torch.where((iou >= iouv[i]) & correct_class)
         else:
             x = torch.where((iou >= iouv[i]) & correct_class) # IoU > threshold and classes match
         if x[0].shape[0]:
@@ -383,7 +383,10 @@ def run(
                 midx = [si] if overlap else targets[:, 0] == si
                 gt_masks = masks[midx]
                 pred_masks = pred_masks_all[si] if pred_masks_all else None
-                correct_bboxes, correct_masks = process_batch(predn, labelsn, iouv, pred_masks, gt_masks, overlap=overlap, masks=True)
+                # correct_bboxes, correct_masks = process_batch(predn, labelsn, iouv, pred_masks, gt_masks, overlap=overlap, masks=True)
+                correct_bboxes = process_batch(predn, labelsn, iouv)
+                if pred_masks is not None:
+                    correct_masks = process_batch(predn, labelsn, iouv, pred_masks, gt_masks, overlap=overlap, masks=True)
                 if plots:
                     confusion_matrix.process_batch(predn, labelsn)
 
