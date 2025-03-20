@@ -97,7 +97,8 @@ def process_batch(detections, labels, iouv, pred_masks=None, gt_masks=None, over
 
     for i in range(len(iouv)):
         if masks and pred_masks is not None and gt_masks is not None:
-            x = torch.where((iou >=iouv[i]) & (mask_iou_vals >= iouv[i]) & correct_class)
+            # x = torch.where((iou >=iouv[i]) & (mask_iou_vals >= iouv[i]) & correct_class)
+            x = torch.where((iou >= iouv[i]) & correct_class) 
         else:
             x = torch.where((iou >= iouv[i]) & correct_class) # IoU > threshold and classes match
         if x[0].shape[0]:
