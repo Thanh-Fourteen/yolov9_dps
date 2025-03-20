@@ -97,12 +97,12 @@ def process_batch(detections, labels, iouv, pred_masks=None, gt_masks=None, over
 
     for i in range(len(iouv)):
         if masks and pred_masks is not None and gt_masks is not None:
+            # x = torch.where((iou >=iouv[i]) & (mask_iou_vals >= iouv[i]) & correct_class)
             print(f"\niou shape: {iou.shape}")
             print(f"iouv[i] shape: {iouv[i].shape}")
             print(f"mask_iou_vals shape: {mask_iou_vals.shape}")
             exit()
             x = torch.where((iou >=iouv[i]) & (mask_iou_vals >= iouv[i]) & correct_class)
-            # x = torch.where((iou >= iouv[i]) & correct_class)
         else:
             x = torch.where((iou >= iouv[i]) & correct_class) # IoU > threshold and classes match
         if x[0].shape[0]:
@@ -255,35 +255,47 @@ def run(
                 mloss = (mloss * batch_i + loss_items) / (batch_i + 1)
 
         # Apply Filter bounding box
-        bs, num_queries, nd = preds[0].shape  # nd = 4 + nc + m
-        bboxes, scores, masks_flat = preds[0].split((4, nc, nd - 4 - nc), dim=-1)  # Tách thành 3 phần
+        bs, _, nd = preds[0].shape
+        m = nd-4-nc # mask w * h
+        bboxes, scores, pred_masks_flat = preds[0].split((4, nc, m), dim=-1)
+        # bboxes *= self.args.imgsz
         outputs = [torch.zeros((0, 6), device=bboxes.device)] * bs
-        topk_values, topk_indexes = torch.topk(scores.max(dim=-1).values, max_det, dim=1)  # Lấy max score trên nc
-        topk_boxes = topk_indexes.unsqueeze(-1).expand(-1, -1, 4)
-        topk_scores = topk_indexes.unsqueeze(-1).expand(-1, -1, nc)
-        topk_masks = topk_indexes.unsqueeze(-1).expand(-1, -1, nd - 4 - nc)
+        topk_values, topk_indexes = torch.topk(scores.max(dim=-1)[0], max_det, dim=1)
+        topk_boxes = topk_indexes.unsqueeze(-1).repeat(1, 1, 4)
+        topk_masks = topk_indexes.unsqueeze(-1).repeat(1, 1, m)
         bboxes = torch.gather(bboxes, 1, topk_boxes)
-        scores = torch.gather(scores, 1, topk_scores)
-        masks_flat = torch.gather(masks_flat, 1, topk_masks)
-
-        for i, (bbox, score, mask_flat) in enumerate(zip(bboxes, scores, masks_flat)):
+        pred_masks_flat = torch.gather(pred_masks_flat, 1, topk_masks)
+        scores = topk_values
+        
+        for i, bbox in enumerate(bboxes):  # (300, 4)
             bbox = xywh2xyxy(bbox)
-            conf, cls = score.max(dim=-1)  # conf là max score, cls là chỉ số lớp tương ứng
-            pred = torch.cat([bbox, conf[..., None], cls[..., None]], dim=-1)
-            pred = pred[conf.argsort(descending=True)]
-            outputs[i] = pred
+            score = scores[i]
+            cls = topk_indexes[i]
+            # Do not need threshold for evaluation as only got 300 boxes here
+            # idx = score > self.args.conf
+            pred = torch.cat([bbox, score[..., None], cls[..., None]], dim=-1)  # filter
+            # Sort by confidence to correctly get internal metrics
+            pred = pred[score.argsort(descending=True)]
+            outputs[i] = pred  # [idx]
         preds = outputs
 
         # Process masks
         pred_masks_all = []
-        if dec_masks is not None:
+        if pred_masks_flat is not None:
             for si in range(bs):
-                mask_raw = dec_masks[-1, si] 
-                n_preds = preds[si].shape[0] 
-                mask_reduced = mask_raw[:n_preds] 
-                pred_masks = F.interpolate(mask_reduced[None], size=im[si].shape[1:], mode='bilinear', align_corners=False)[0]
-                pred_masks = pred_masks.gt_(0.5).float()  # [N, 128, 192]
-                pred_masks_all.append(pred_masks)
+                mask_flat = pred_masks_flat[si]  
+                h, w = im[si].shape[1:]  
+                if m == h * w:
+                    pred_masks = mask_flat.view(-1, h, w)  # [max_det, H, W]
+                    pred_masks = pred_masks.gt_(0.5) 
+                    pred_masks_all.append(pred_masks)
+                else:       # fix shape
+                    mask_raw = dec_masks[-1, si]
+                    n_preds = preds[si].shape[0]
+                    mask_reduced = mask_raw[:n_preds]
+                    pred_masks = F.interpolate(mask_reduced[None], size=im[si].shape[1:], mode='bilinear', align_corners=False)[0]
+                    pred_masks = pred_masks.gt_(0.5)
+                    pred_masks_all.append(pred_masks)
 
         # Metrics
         plot_masks = []
