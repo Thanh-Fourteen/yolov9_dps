@@ -20,12 +20,11 @@ import torch.nn.functional as F
 from models.common import DetectMultiBackend
 from utils.callbacks import Callbacks
 from utils.general import (LOGGER, NUM_THREADS, TQDM_BAR_FORMAT, Profile, check_dataset, check_img_size,
-                           check_requirements, check_yaml, coco80_to_coco91_class, colorstr, increment_path,
+                        check_yaml, coco80_to_coco91_class, colorstr, increment_path,
                            print_args, scale_boxes, xywh2xyxy, xyxy2xywh)
 from utils.metrics import ConfusionMatrix, box_iou
 from utils.plots import output_to_target, plot_val_study, plot_images
 from utils.segment.dataloaders import create_dataloader
-from utils.segment.general import mask_iou, process_mask, process_mask_upsample
 from utils.segment.metrics import Metrics, ap_per_class_box_and_mask
 from utils.segment.plots import plot_images_and_masks
 from utils.torch_utils import select_device, smart_inference_mode
@@ -326,10 +325,9 @@ def run(
                 midx = [si] if overlap else targets[:, 0] == si
                 gt_masks = masks[midx]
                 pred_masks = pred_masks_all[si] if pred_masks_all else None
-                correct_bboxes, correct_masks = process_batch(predn, labelsn, iouv, pred_masks, gt_masks, overlap=overlap, masks=True)
-                # correct_bboxes = process_batch(predn, labelsn, iouv)
-                # if pred_masks is not None:
-                #     correct_masks = process_batch(predn, labelsn, iouv, pred_masks, gt_masks, overlap=overlap, masks=True)
+                correct_bboxes = process_batch(predn, labelsn, iouv)
+                if pred_masks is not None:
+                    correct_masks = process_batch(predn, labelsn, iouv, pred_masks, gt_masks, overlap=overlap, masks=True)
                 if plots:
                     confusion_matrix.process_batch(predn, labelsn)
 
