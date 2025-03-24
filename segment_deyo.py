@@ -116,7 +116,7 @@ def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictio
         #v.requires_grad = True  # train all layers
         # v.register_hook(lambda x: torch.nan_to_num(x))  # NaN to 0 (commented for erratic training results)
         if any(x in k for x in freeze):
-            LOGGER.info(f'freezing {k}')
+            # LOGGER.info(f'freezing {k}')
             v.requires_grad = False
 
     # Image size
